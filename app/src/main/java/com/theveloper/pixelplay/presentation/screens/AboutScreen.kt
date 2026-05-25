@@ -174,7 +174,6 @@ private fun normalizeHandle(handle: String): String {
 // AboutTopBar removed, replaced by CollapsibleCommonTopBar
 
 @androidx.annotation.OptIn(UnstableApi::class)
-@Suppress("UNUSED_PARAMETER")
 @Composable
 fun AboutScreen(
     navController: NavController,

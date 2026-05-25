@@ -1,6 +1,7 @@
 package com.theveloper.pixelplay
 
 import com.theveloper.pixelplay.presentation.navigation.navigateSafely
+import com.theveloper.pixelplay.presentation.navigation.navigateToTopLevelSafely
 
 // import androidx.compose.ui.platform.LocalView // No longer needed for this
 // import androidx.core.view.WindowInsetsCompat // No longer needed for this
@@ -13,7 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Trace
 import android.provider.Settings
-import android.util.Log
+import timber.log.Timber
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -81,6 +82,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.res.stringResource
 import com.theveloper.pixelplay.presentation.viewmodel.PlayerSheetState
 
 import androidx.compose.ui.unit.Dp
@@ -216,14 +218,11 @@ class MainActivity : ComponentActivity() {
         val isBenchmarkMode = intent.getBooleanExtra("is_benchmark", false)
         val shouldBenchmarkRebuildDatabase =
             isBenchmarkMode && intent.getBooleanExtra("benchmark_rebuild_database", false)
-        Log.i(
-            "PixelPlayBenchmark",
-            "onCreate benchmark=$isBenchmarkMode rebuildDatabase=$shouldBenchmarkRebuildDatabase"
-        )
+        Timber.i("onCreate benchmark=$isBenchmarkMode rebuildDatabase=$shouldBenchmarkRebuildDatabase")
         if (shouldBenchmarkRebuildDatabase) {
             lifecycleScope.launch {
                 userPreferencesRepository.setInitialSetupDone(true)
-                Log.i("PixelPlayBenchmark", "Enqueueing benchmark database rebuild")
+                Timber.i("Enqueueing benchmark database rebuild")
                 syncManager.rebuildDatabase()
                 delay(1_500L)
                 playerViewModel.prepareBenchmarkPlayerFromLibrary()
@@ -353,7 +352,7 @@ class MainActivity : ComponentActivity() {
         when {
             // Handle shuffle all shortcut / tile
             intent.action == MainActivityIntentContract.ACTION_SHUFFLE_ALL -> {
-                android.util.Log.d("TileDebug", "handleIntent: ACTION_SHUFFLE_ALL received")
+                Timber.d("handleIntent: ACTION_SHUFFLE_ALL received")
                 playerViewModel.triggerShuffleAllFromTile()
                 intent.action = null // Clear action to prevent re-triggering
             }
@@ -421,18 +420,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun persistUriPermissionIfNeeded(intent: Intent, uri: android.net.Uri) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-            val hasPersistablePermission = intent.flags and android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION != 0
-            if (hasPersistablePermission) {
-                val takeFlags = intent.flags and (android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                if (takeFlags != 0) {
-                    try {
-                        contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    } catch (securityException: SecurityException) {
-                        android.util.Log.w("MainActivity", "Unable to persist URI permission for $uri", securityException)
-                    } catch (illegalArgumentException: IllegalArgumentException) {
-                        android.util.Log.w("MainActivity", "Persistable URI permission not granted for $uri", illegalArgumentException)
-                    }
+        val hasPersistablePermission = intent.flags and android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION != 0
+        if (hasPersistablePermission) {
+            val takeFlags = intent.flags and (android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            if (takeFlags != 0) {
+                try {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (securityException: SecurityException) {
+                    Timber.w(securityException, "Unable to persist URI permission for %s", uri)
+                } catch (illegalArgumentException: IllegalArgumentException) {
+                    Timber.w(illegalArgumentException, "Persistable URI permission not granted for %s", uri)
                 }
             }
         }
@@ -494,7 +491,7 @@ class MainActivity : ComponentActivity() {
                 CircularWavyProgressIndicator()
                 Spacer(modifier = Modifier.height(20.dp))
                 Text(
-                    text = "Preparing setup…",
+                    text = stringResource(R.string.preparing_setup),
                     style = MaterialTheme.typography.titleMedium,
                     textAlign = TextAlign.Center
                 )
@@ -628,7 +625,6 @@ class MainActivity : ComponentActivity() {
                 Screen.SettingsCategory.route,
                 Screen.DelimiterConfig.route,
                 Screen.PaletteStyle.route,
-                Screen.RecentlyPlayed.route,
                 Screen.DeviceCapabilities.route,
                 Screen.EasterEgg.route,
                 Screen.WordDelimiterConfig.route
@@ -755,6 +751,8 @@ class MainActivity : ComponentActivity() {
             userPreferencesRepository.clearDeprecatedPlayerSheetPreference()
         }
 
+        var showDeezloadSheet by remember { mutableStateOf(false) }
+
         CompositionLocalProvider(
             LocalAppHapticsConfig provides appHapticsConfig,
             LocalHapticFeedback provides scopedHapticFeedback
@@ -765,14 +763,15 @@ class MainActivity : ComponentActivity() {
                 onDestinationSelected = { destination ->
                     scope.launch { drawerState.close() }
                     when (destination) {
-                        DrawerDestination.Home -> navController.navigateSafely(Screen.Home.route) {
-                            popUpTo(Screen.Home.route) { inclusive = true }
-                        }
+                        DrawerDestination.Home -> navController.navigateToTopLevelSafely(Screen.Home.route)
                         DrawerDestination.Equalizer -> navController.navigateSafely(Screen.Equalizer.route)
                         DrawerDestination.Settings -> navController.navigateSafely(Screen.Settings.route)
                         DrawerDestination.Telegram -> {
                             val intent = Intent(this@MainActivity, com.theveloper.pixelplay.presentation.telegram.auth.TelegramLoginActivity::class.java)
                             startActivity(intent)
+                        }
+                        DrawerDestination.DeezloadMusic -> {
+                            showDeezloadSheet = true
                         }
                     }
                 }
@@ -998,6 +997,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // Deezload music download sheet
+        if (showDeezloadSheet) {
+            com.theveloper.pixelplay.presentation.telegram.deezload.DeezloadSearchSheet(
+                onDismissRequest = { showDeezloadSheet = false }
+            )
+        }
+
         Trace.endSection()
     }
 
@@ -1018,7 +1024,7 @@ class MainActivity : ComponentActivity() {
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background.copy(alpha = 0.9f))
-                .clickable(enabled = false, onClick = {}),
+                .pointerInput(Unit) { detectTapGestures { /* consume taps */ } },
             contentAlignment = Alignment.Center
         ) {
             Column(
@@ -1028,7 +1034,7 @@ class MainActivity : ComponentActivity() {
                 CircularWavyProgressIndicator()
                 Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = "Preparing your library...",
+                    text = stringResource(R.string.preparing_library),
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground
                 )
@@ -1041,7 +1047,7 @@ class MainActivity : ComponentActivity() {
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Scanned ${syncProgress.currentCount} of ${syncProgress.totalCount} songs",
+                        text = stringResource(R.string.scan_progress, syncProgress.currentCount, syncProgress.totalCount),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

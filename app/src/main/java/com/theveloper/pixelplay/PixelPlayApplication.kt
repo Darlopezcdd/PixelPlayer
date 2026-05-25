@@ -101,15 +101,13 @@ class PixelPlayApplication : Application(), ImageLoaderFactory, Configuration.Pr
             Timber.plant(ReleaseTree())
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL_ID,
-                "PixelPlayer Music Playback",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
-        }
+        val channel = NotificationChannel(
+            NOTIFICATION_CHANNEL_ID,
+            "PixelPlayer Music Playback",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.createNotificationChannel(channel)
 
         ProcessLifecycleOwner.get().lifecycle.addObserver(appLifecycleObserver)
 
@@ -141,32 +139,32 @@ class PixelPlayApplication : Application(), ImageLoaderFactory, Configuration.Pr
 
         imageLoader.get().memoryCache?.trimMemory(level)
 
-        if (
-            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE ||
-            level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND ||
-            level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN
-        ) {
-            themeStateHolder.get().trimMemory(level)
-        }
-
-        if (
-            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
-            level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND ||
-            level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN
-        ) {
-            artistImageRepository.get().clearCache()
-            telegramRepository.get().clearMemoryCache()
-            MediaMetadataRetrieverPool.clear()
+        // Use escalating severity: only clean aggressively under real pressure.
+        // Previous OR-based conditions always evaluated to true because
+        // TRIM_MEMORY_RUNNING_MODERATE (5) is the lowest constant.
+        when {
+            level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> {
+                // Extreme pressure: clear everything
+                imageLoader.get().memoryCache?.clear()
+                artistImageRepository.get().clearCache()
+                telegramRepository.get().clearMemoryCache()
+                MediaMetadataRetrieverPool.clear()
+                themeStateHolder.get().trimMemory(level)
+            }
+            level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND -> {
+                // App backgrounded with moderate pressure
+                artistImageRepository.get().clearCache()
+                telegramRepository.get().clearMemoryCache()
+                MediaMetadataRetrieverPool.clear()
+                themeStateHolder.get().trimMemory(level)
+            }
+            level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN -> {
+                // UI hidden but no strong memory pressure
+                themeStateHolder.get().trimMemory(level)
+            }
         }
 
         libraryStateHolder.get().trimMemory(level)
-
-        if (
-            level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL ||
-            level >= ComponentCallbacks2.TRIM_MEMORY_COMPLETE
-        ) {
-            imageLoader.get().memoryCache?.clear()
-        }
     }
 
     // 3. Sobrescribe el método para proveer la configuración de WorkManager

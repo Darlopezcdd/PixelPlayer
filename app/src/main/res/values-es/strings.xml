@@ -144,4 +144,30 @@
     <string name="ui_format_percent_d">%1$d%%</string>
     <string name="backup_manifest_schema_v">v%1$d</string>
     <string name="backup_manifest_device_line">%1$s %2$s</string>
+
+    <!-- Setup & Sync UI (MainActivity) -->
+    <string name="preparing_setup">Preparando configuración…</string>
+    <string name="preparing_library">Preparando tu biblioteca…</string>
+    <string name="scan_progress">Escaneadas %1$d de %2$d canciones</string>
+
+    <!-- Deezload music download module -->
+    <string name="deezload_sheet_title">Descargar Música</string>
+    <string name="deezload_sheet_subtitle">Busca y descarga canciones en alta calidad vía Telegram</string>
+    <string name="deezload_search_placeholder">Nombre de canción, artista…</string>
+    <string name="deezload_clear_search">Limpiar búsqueda</string>
+    <string name="deezload_searching">Buscando…</string>
+    <string name="deezload_no_results">Sin resultados</string>
+    <string name="deezload_download">Descargar</string>
+    <string name="deezload_initial_title">Busca música</string>
+    <string name="deezload_initial_subtitle">Escribe el nombre de una canción o artista para buscar y descargar</string>
+    <string name="deezload_telegram_not_connected">Telegram no conectado</string>
+    <string name="deezload_telegram_connect_first">Inicia sesión en Telegram primero para descargar música</string>
+    <string name="deezload_progress_sending">Enviando solicitud…</string>
+    <string name="deezload_progress_waiting">Esperando al bot…</string>
+    <string name="deezload_progress_downloading">Descargando… %1$d%%</string>
+    <string name="deezload_progress_saving">Guardando en biblioteca…</string>
+    <string name="deezload_progress_completed">¡Descarga completada!</string>
+    <string name="deezload_drawer_title">Descargar Música</string>
 </resources>
+
+

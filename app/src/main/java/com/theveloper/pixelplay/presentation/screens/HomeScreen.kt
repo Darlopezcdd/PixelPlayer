@@ -326,7 +326,7 @@ fun HomeScreen(
                          showStreamingProviderSheet = true
                     },
                     onMenuClick = {
-                        // onOpenSidebar() // Disabled
+                        onOpenSidebar()
                     },
                     isScrolled = isScrolledPastThreshold.value
                 )

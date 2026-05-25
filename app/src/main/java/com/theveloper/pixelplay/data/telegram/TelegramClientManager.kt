@@ -57,8 +57,10 @@ class TelegramClientManager @Inject constructor(
                 is TdApi.UpdateFile -> {
                     _updates.tryEmit(update)
                 }
-                // Add other update handlers here
-                else -> {}
+                else -> {
+                    // Emit all other updates to the shared flow so subscribers can filter what they need
+                    _updates.tryEmit(update)
+                }
             }
         } else if (update is TdApi.Error) {
             reportTdError(update)

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material3.DrawerState
@@ -35,6 +36,7 @@ sealed class DrawerDestination(val route: String) {
     object Equalizer : DrawerDestination("equalizer")
     object Settings : DrawerDestination("settings")
     object Telegram : DrawerDestination("telegram")
+    object DeezloadMusic : DrawerDestination("deezload_music")
 }
 
 @Composable
@@ -46,7 +48,7 @@ fun AppSidebarDrawer(
 ) {
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = false,
+        gesturesEnabled = true,
         drawerContent = {
             ModalDrawerSheet(
                 modifier = Modifier
@@ -176,6 +178,33 @@ private fun DrawerContent(
             },
             selected = selectedRoute == DrawerDestination.Telegram.route,
             onClick = { onDestinationSelected(DrawerDestination.Telegram) },
+            modifier = Modifier.padding(vertical = 4.dp),
+            colors = NavigationDrawerItemDefaults.colors(
+                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                selectedTextColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                unselectedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0f),
+                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+            ),
+            shape = RoundedCornerShape(16.dp)
+        )
+
+        NavigationDrawerItem(
+            icon = {
+                Icon(
+                    imageVector = Icons.Rounded.CloudDownload,
+                    contentDescription = stringResource(R.string.deezload_drawer_title)
+                )
+            },
+            label = {
+                Text(
+                    text = stringResource(R.string.deezload_drawer_title),
+                    style = MaterialTheme.typography.labelLarge
+                )
+            },
+            selected = selectedRoute == DrawerDestination.DeezloadMusic.route,
+            onClick = { onDestinationSelected(DrawerDestination.DeezloadMusic) },
             modifier = Modifier.padding(vertical = 4.dp),
             colors = NavigationDrawerItemDefaults.colors(
                 selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
