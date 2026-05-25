@@ -9,15 +9,158 @@
   Built with Jetpack Compose and Material Design 3
 </p>
 
+<p align="center">
+  <img src="assets/screenshot1.jpg" alt="Screenshot 1" width="200" style="border-radius:26px;"/>
+  <img src="assets/screenshot2.jpg" alt="Screenshot 2" width="200" style="border-radius:26px;"/>
+  <img src="assets/screenshot3.jpg" alt="Screenshot 3" width="200" style="border-radius:26px;"/>
+  <img src="assets/screenshot4.jpg" alt="Screenshot 4" width="200" style="border-radius:26px;"/>
+</p>
+
+<p align="center">
+    <a href="https://github.com/theovilardo/PixelPlayer/releases/latest">
+        <img src="https://img.shields.io/github/v/release/theovilardo/PixelPlayer?include_prereleases&logo=github&style=for-the-badge&label=Latest%20Release" alt="Latest Release">
+    </a>
+    <a href="https://github.com/theovilardo/PixelPlayer/releases">
+        <img src="https://img.shields.io/github/downloads/theovilardo/PixelPlayer/total?logo=github&style=for-the-badge" alt="Total Downloads">
+    </a>
+    <img src="https://img.shields.io/badge/Android-10%2B-green?style=for-the-badge&logo=android" alt="Android 11+">
+    <img src="https://img.shields.io/badge/Kotlin-100%25-purple?style=for-the-badge&logo=kotlin" alt="Kotlin">
+</p>
+
+---
+
+## ‼️ DISCLAIMER
+- No fork of this project will recieve support, if you use a fork, ask the forker to support you.
+
+---
+
+## ✨ Features
+
+### 🎨 Modern UI/UX
+- **Material You** - Dynamic color theming that adapts to your wallpaper
+- **Smooth Animations** - Fluid transitions and micro-interactions
+- **Customizable UI** - Adjustable corner radius and navigation bar settings
+- **Dark/Light Theme** - Automatic or manual theme switching
+- **Album Art Colors** - Dynamic color extraction from album artwork
+
+### 🎵 Powerful Playback
+- **Media3 ExoPlayer** - Industry-leading audio engine with FFmpeg support
+- **Background Playback** - Full media session integration
+- **Queue Management** - Drag-and-drop reordering
+- **Shuffle & Repeat** - All playback modes supported
+- **Gapless Playback** - Seamless transitions between tracks
+- **Custom Transitions** - Configure crossfades between songs
+
+### 📚 Library Management
+- **Multi-format Support** - MP3, FLAC, AAC, OGG, WAV, and more
+- **Browse By** - Songs, Albums, Artists, Genres, Folders
+- **Smart Artist Parsing** - Configurable delimiters for multi-artist tracks
+- **Album Artist Grouping** - Proper album organization
+- **Folder Filtering** - Choose which directories to scan
+
+### 🔍 Discovery & Organization
+- **Full-text Search** - Search across your entire library
+- **Daily Mix** - AI-powered personalized playlist based on listening habits
+- **Playlists** - Create and manage custom playlists
+- **Statistics** - Track your listening history and habits
+
+### 🎤 Lyrics
+- **Synchronized Lyrics** - LRC format via LRCLIB API
+- **Lyrics Editing** - Modify or add lyrics to your tracks
+- **Scrolling Display** - Follow along as you listen
+
+### 🖼️ Artist Artwork
+- **Deezer Integration** - Automatic artist images from Deezer API
+- **Smart Caching** - Memory (LRU) + database caching for offline access
+- **Fallback Icons** - Beautiful placeholders when images unavailable
+
+### 📲 Connectivity
+- **Chromecast** - Stream to your TV or smart speakers
+- **Android Auto** - Full Android Auto support for in-car playback (Soon)
+- **Widgets** - Home screen control with Glance widgets
+
+### ⚙️ Advanced Features
+- **Tag Editor** - Edit metadata with TagLib (MP3, FLAC, M4A support)
+- **AI Playlists** - Generate playlists with AI (Supports Gemini, Deepseek, OpenAI, etc.)
+
+---
+
+## 🛠️ Tech Stack
+
+| Category | Technology |
+|----------|------------|
+| **Language** | [Kotlin](https://kotlinlang.org/) 100% |
+| **UI Framework** | [Jetpack Compose](https://developer.android.com/jetpack/compose) |
+| **Design System** | [Material Design 3](https://m3.material.io/) |
+| **Audio Engine** | [Media3 ExoPlayer](https://developer.android.com/guide/topics/media/media3) + FFmpeg |
+| **Architecture** | MVVM with StateFlow/SharedFlow |
+| **DI** | [Hilt](https://dagger.dev/hilt/) |
+| **Database** | [Room](https://developer.android.com/training/data-storage/room) |
+| **Networking** | [Retrofit](https://square.github.io/retrofit/) + OkHttp |
+| **Image Loading** | [Coil](https://coil-kt.github.io/coil/) |
+| **Async** | Kotlin Coroutines & Flow |
+| **Background Tasks** | WorkManager |
+| **Metadata** | [TagLib](https://github.com/nicholaus/taglib-android) |
+| **Widgets** | [Glance](https://developer.android.com/jetpack/compose/glance) |
+
+---
+
+## 📱 Requirements
+
+- **Android 11** (API 30) or higher
+- **6GB RAM** recommended for smooth performance
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Android Studio Ladybug | 2024.2.1 or newer
+- Android SDK 29+
+- JDK 11+
+
+### Installation
+
+1. **Clone the repository**
+   ```sh
+   git clone https://github.com/theovilardo/PixelPlayer.git
+   ```
+
+2. **Obtain Telegram API Credentials**
+   - Go to [my.telegram.org](https://my.telegram.org) and log in with your Telegram account.
+   - Go to "API development tools" and create a new application to get your `api_id` and `api_hash`.
+   - Create a file named `local.properties` in the root of the cloned project (if it doesn't exist).
+   - Add the following lines with your credentials:
+     ```properties
+     telegram_api_id=YOUR_API_ID_HERE
+     telegram_api_hash="YOUR_API_HASH_HERE"
+     ```
+
+3. **Open in Android Studio**
+   - Open Android Studio
+   - Select "Open an Existing Project"
+   - Navigate to the cloned directory
+
+4. **Sync and Build**
+   - Wait for Gradle to sync dependencies
+   - Build the project (Build → Make Project)
+
+5. **Run**
+   - Connect a device or start an emulator
+   - Click Run (▶️)
+
 ---
 
 ## ⬇️ Download / Descarga
 
 <p align="center">
-  <h3><a href="release_builds/">Descarga el APK aquí (Release Builds)</a></h3>
+  <h3><a href="https://github.com/Darlopezcdd/PixelPlayer/releases/latest">Descarga el APK aquí (Releases)</a></h3>
 </p>
 
-Hemos incluido el APK compilado directamente en la carpeta `release_builds` de este proyecto para que puedas instalarlo fácilmente en tu dispositivo.
+Ve a la sección de **Releases** de este repositorio para descargar el archivo `.apk` e instalarlo en tu dispositivo Android.
+
+---
 
 ## 📂 Project Structure
 
