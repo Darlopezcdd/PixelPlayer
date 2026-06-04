@@ -1,5 +1,6 @@
 package com.theveloper.pixelplay.data.service.player
 
+import android.app.ActivityManager
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -9,8 +10,10 @@ import android.os.Build
 import android.os.SystemClock
 import android.util.LruCache
 import androidx.annotation.OptIn
+import androidx.annotation.RequiresApi
 import androidx.media3.common.AudioAttributes as Media3AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -32,6 +35,7 @@ import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.mp4.Mp4Extractor
+import com.theveloper.pixelplay.data.diagnostics.PerformanceMetrics
 import com.theveloper.pixelplay.data.model.TransitionSettings
 import com.theveloper.pixelplay.data.telegram.TelegramRepository
 import com.theveloper.pixelplay.utils.envelope
@@ -56,6 +60,7 @@ import kotlin.coroutines.resume
 import com.theveloper.pixelplay.data.netease.NeteaseStreamProxy
 import com.theveloper.pixelplay.data.navidrome.NavidromeStreamProxy
 import com.theveloper.pixelplay.data.qqmusic.QqMusicStreamProxy
+import androidx.core.net.toUri
 
 data class ActiveDecoderInfo(
     val name: String,
@@ -72,6 +77,118 @@ internal fun shouldResumeAfterTransientAudioFocusLoss(
     return masterPlayWhenReady ||
         masterIsPlaying ||
         (transitionRunning && (auxiliaryPlayWhenReady || auxiliaryIsPlaying))
+}
+
+internal fun shouldDisableAudioOffloadByDefaultForDevice(
+    manufacturer: String,
+    brand: String,
+    model: String,
+    hardware: String,
+    sdkInt: Int
+): Boolean {
+    val manufacturerName = manufacturer.trim().lowercase()
+    val brandName = brand.trim().lowercase()
+    val modelName = model.trim().lowercase()
+    val hardwareName = hardware.trim().lowercase()
+
+    val isXiaomiFamilyDevice = manufacturerName == "xiaomi" ||
+        brandName == "xiaomi" ||
+        brandName == "redmi" ||
+        brandName == "poco"
+    if (isXiaomiFamilyDevice && sdkInt >= 36) return true
+
+    val isLavaDevice =
+        manufacturerName == "lava" ||
+            brandName == "lava"
+    val looksLikeMtkHardware =
+        hardwareName.startsWith("mt") ||
+            hardwareName.contains("mediatek") ||
+            hardwareName.contains("mtk")
+    val isReportedLxxFamily = modelName.startsWith("lxx") && isLavaDevice
+    val isMtkLavaVariant = isLavaDevice && looksLikeMtkHardware
+
+    return sdkInt >= 35 && (isReportedLxxFamily || isMtkLavaVariant)
+}
+
+internal fun shouldTriggerAudioOffloadStallFallback(
+    audioOffloadEnabled: Boolean,
+    transitionRunning: Boolean,
+    isCurrentMasterPlayer: Boolean,
+    mediaIdMatches: Boolean,
+    playbackState: Int,
+    isPlaying: Boolean,
+    playWhenReady: Boolean,
+    playbackSuppressionReason: Int
+): Boolean {
+    return audioOffloadEnabled &&
+        !transitionRunning &&
+        isCurrentMasterPlayer &&
+        mediaIdMatches &&
+        playWhenReady &&
+        !isPlaying &&
+        playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE &&
+        playbackState != Player.STATE_IDLE &&
+        playbackState != Player.STATE_ENDED
+}
+
+/**
+ * Decides whether an early STATE_BUFFERING (within ~500ms of audio playing) should be read
+ * as a HAL offload reset and trigger disabling offload for the session.
+ *
+ * The buffering is NOT treated as a HAL reset when it is explained by a recent user seek
+ * ([isPostSeekBuffering]) or by a just-finished crossfade ([isPostTransitionBuffering]) —
+ * in those cases the buffering is expected, and disabling offload would needlessly drop the
+ * battery saving and rebuild the player (an audible glitch).
+ */
+internal fun shouldDisableAudioOffloadOnEarlyBuffering(
+    audioOffloadEnabled: Boolean,
+    transitionRunning: Boolean,
+    lastPlayingAtMs: Long,
+    timeSincePlayingMs: Long,
+    isPostSeekBuffering: Boolean,
+    isPostTransitionBuffering: Boolean
+): Boolean {
+    return audioOffloadEnabled &&
+        !transitionRunning &&
+        lastPlayingAtMs > 0L &&
+        timeSincePlayingMs < 500L &&
+        !isPostSeekBuffering &&
+        !isPostTransitionBuffering
+}
+
+/** ExoPlayer [DefaultLoadControl] buffer durations (ms) for a build of the player. */
+internal data class LoadControlBufferProfile(
+    val minBufferMs: Int,
+    val maxBufferMs: Int,
+    val bufferForPlaybackMs: Int,
+    val bufferForPlaybackAfterRebufferMs: Int
+)
+
+/**
+ * Picks the buffer profile for the player. On memory-constrained devices the maximum
+ * prefetch depth is reduced to cap peak RAM — with time-based buffering the buffered RAM is
+ * bitrate × seconds, so a 60 s window on a hi-res lossless track (plus a second buffered
+ * player during a crossfade) can be tens of MB. Shrinking the *time* window (not switching
+ * to a byte threshold) keeps start latency and cross-format uniformity identical to the
+ * normal profile; only how far ahead we prefetch changes, which is free for local files and
+ * still ample for remote streams. Normal-RAM devices are unchanged.
+ */
+internal fun loadControlBufferProfileFor(isLowRamDevice: Boolean): LoadControlBufferProfile {
+    return if (isLowRamDevice) {
+        LoadControlBufferProfile(
+            minBufferMs = 15_000,
+            maxBufferMs = 30_000,
+            bufferForPlaybackMs = 2_000,
+            bufferForPlaybackAfterRebufferMs = 5_000
+        )
+    } else {
+        LoadControlBufferProfile(
+            minBufferMs = 30_000,
+            maxBufferMs = 60_000,
+            bufferForPlaybackMs = 2_000,
+            bufferForPlaybackAfterRebufferMs = 5_000
+        )
+    }
 }
 
 /**
@@ -97,7 +214,14 @@ class DualPlayerEngine @Inject constructor(
     private val connectivityStateHolder: com.theveloper.pixelplay.presentation.viewmodel.ConnectivityStateHolder
 ) {
     private companion object {
-        private const val AUDIO_OFFLOAD_BUFFERING_FALLBACK_MS = 4_000L
+        private const val AUDIO_OFFLOAD_STALL_FALLBACK_MS = 4_000L
+        // Grace window after a crossfade/transition during which the STATE_BUFFERING
+        // "HAL offload reset" heuristic is suppressed. Right after the player swap the new
+        // master (the former auxiliary) has just started, so a brief buffering blip there
+        // must NOT be mistaken for a HAL underflow — doing so would disable audio offload
+        // for the whole session (losing the battery saving) and rebuild the player (an
+        // audible glitch right after the fade). This keeps offload enabled across crossfades.
+        private const val POST_TRANSITION_OFFLOAD_GUARD_MS = 2_000L
         private const val MAX_AUXILIARY_TIMELINE_ITEMS = 200
         private val LOCAL_MEDIA_SCHEMES = setOf("content", "file", "android.resource")
         private val REMOTE_MEDIA_SCHEMES = setOf("http", "https", "telegram", "netease", "qqmusic", "navidrome", "jellyfin", "gdrive")
@@ -129,6 +253,12 @@ class DualPlayerEngine @Inject constructor(
     private val onPlayerSwappedListeners = mutableListOf<(Player) -> Unit>()
     private val onTransitionDisplayPlayerListeners = mutableListOf<(Player) -> Unit>()
     private val onTransitionFinishedListeners = mutableListOf<() -> Unit>()
+
+    private var onPlayerAboutToBeReleasedListener: ((Player) -> Unit)? = null
+
+    fun setOnPlayerAboutToBeReleasedListener(listener: (Player) -> Unit) {
+        onPlayerAboutToBeReleasedListener = listener
+    }
     
     // Active Audio Session ID Flow
     private val _activeAudioSessionId = MutableStateFlow(0)
@@ -149,6 +279,51 @@ class DualPlayerEngine @Inject constructor(
     // player rebuild, which leaves the MediaSession briefly pointing at the released player
     // and silently drops any subsequent seeks.
     private var lastSeekAtMs: Long = 0L
+    // Diagnostics: timestamp when the master player entered STATE_BUFFERING, used to
+    // measure buffering->ready (playback prepare) durations for the performance report.
+    private var bufferingStartedAtMs: Long = 0L
+    // Diagnostics: timestamp when the most recent crossfade/transition started.
+    private var transitionStartedAtMs: Long = 0L
+    // Timestamp when the most recent crossfade/transition finished. Used to give the new
+    // master a grace window before the HAL-offload-reset heuristic can fire, so a crossfade
+    // can never spuriously disable audio offload (battery) or trigger a player rebuild.
+    private var lastTransitionFinishedAtMs: Long = 0L
+
+    /**
+     * Whether ExoPlayer audio offload is currently enabled for this session. Exposed
+     * read-only for the diagnostic performance report. Offload is disabled at runtime
+     * when a HAL stall/reset is detected (see [disableAudioOffloadForSession]).
+     */
+    val isAudioOffloadEnabled: Boolean
+        get() = audioOffloadEnabled
+
+    /** Lightweight, allocation-cheap snapshot of the live audio format, for diagnostics. */
+    data class AudioFormatSnapshot(
+        val sampleMimeType: String?,
+        val sampleRate: Int,
+        val channelCount: Int,
+        val pcmEncoding: Int,
+        val bitrate: Int
+    )
+
+    /** Returns the current master-player audio format, or null when nothing is decoding. */
+    fun currentAudioFormatSnapshot(): AudioFormatSnapshot? {
+        if (!::playerA.isInitialized) return null
+        val format = playerA.audioFormat ?: return null
+        fun Int.orZero() = if (this == Format.NO_VALUE) 0 else this
+        val bitrate = when {
+            format.averageBitrate != Format.NO_VALUE -> format.averageBitrate
+            format.peakBitrate != Format.NO_VALUE -> format.peakBitrate
+            else -> 0
+        }
+        return AudioFormatSnapshot(
+            sampleMimeType = format.sampleMimeType,
+            sampleRate = format.sampleRate.orZero(),
+            channelCount = format.channelCount.orZero(),
+            pcmEncoding = format.pcmEncoding.orZero(),
+            bitrate = bitrate
+        )
+    }
 
     /**
      * Set by MusicService once ReplayGain for the incoming track is known.
@@ -192,11 +367,12 @@ class DualPlayerEngine @Inject constructor(
     }
 
     // Listener to attach to the active master player (playerA)
-    private val masterPlayerListener = object : Player.Listener, AnalyticsListener {
+    private val masterPlayerListener = object : Player.Listener, AnalyticsListener, ExoPlayer.AudioOffloadListener {
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
             if (playWhenReady) {
                 lastPlayWhenReadyAtMs = SystemClock.elapsedRealtime()
                 requestAudioFocus()
+                scheduleAudioOffloadFallbackIfNeeded(playerA)
             } else {
                 cancelAudioOffloadFallback()
                 // Keep focus across user pauses so a quick resume doesn't have to re-acquire it.
@@ -213,6 +389,46 @@ class DualPlayerEngine @Inject constructor(
             }
         }
 
+        /**
+         * Fires when ExoPlayer believes the audio HAL is producing output via
+         * offload and the renderer thread can stop polling — at that point the
+         * CPU genuinely doesn't need a wake lock to keep playing audio. When
+         * [sleepingForOffload] flips back to false (track change, format
+         * mismatch, fallback path), restore [C.WAKE_MODE_LOCAL] so the
+         * non-offload PCM path keeps the CPU awake correctly.
+         *
+         * Battery: this is what actually lets the SoC race-to-sleep during
+         * music playback. The static [C.WAKE_MODE_LOCAL] we set at build time
+         * is the safe default; this callback is the dynamic optimisation.
+         */
+        @Suppress("UnsafeOptInUsageError")
+        override fun onSleepingForOffloadChanged(sleepingForOffload: Boolean) {
+            if (!::playerA.isInitialized) return
+            // Only override the wake mode for local media. Remote schemes need
+            // C.WAKE_MODE_NETWORK to keep the wifi lock; we never want to drop
+            // that to NONE.
+            val baseMode = wakeModeFor(playerA.currentMediaItem)
+            val desiredMode = if (sleepingForOffload && baseMode == C.WAKE_MODE_LOCAL) {
+                C.WAKE_MODE_NONE
+            } else {
+                baseMode
+            }
+            if (currentWakeMode == desiredMode) return
+
+            try {
+                playerA.setWakeMode(desiredMode)
+                playerB?.setWakeMode(desiredMode)
+                currentWakeMode = desiredMode
+                Timber.tag("DualPlayerEngine").d(
+                    "Wake mode -> %d (sleepingForOffload=%b)",
+                    desiredMode,
+                    sleepingForOffload
+                )
+            } catch (e: Exception) {
+                Timber.tag("DualPlayerEngine").w(e, "Failed to apply offload-aware wake mode")
+            }
+        }
+
         override fun onAudioDecoderInitialized(
             eventTime: AnalyticsListener.EventTime,
             decoderName: String,
@@ -221,7 +437,25 @@ class DualPlayerEngine @Inject constructor(
         ) {
             val isHardware = AudioDecoderPolicy.isLikelyHardwareDecoder(decoderName)
             _activeDecoderInfo.value = ActiveDecoderInfo(decoderName, isHardware)
+            PerformanceMetrics.recordTiming(
+                PerformanceMetrics.Timings.AUDIO_DECODER_INIT,
+                initializationDurationMs
+            )
             Timber.tag("DualPlayerEngine").d("Audio decoder initialized: %s (Hardware: %b)", decoderName, isHardware)
+        }
+
+        override fun onAudioInputFormatChanged(
+            eventTime: AnalyticsListener.EventTime,
+            format: Format,
+            decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?
+        ) {
+            // Record the live format (channels, sample rate, bit depth) as the report's
+            // source of multichannel / bit-depth data — these aren't stored in the library DB.
+            PerformanceMetrics.recordPlaybackFormat(
+                channelCount = if (format.channelCount == Format.NO_VALUE) 0 else format.channelCount,
+                sampleRate = if (format.sampleRate == Format.NO_VALUE) 0 else format.sampleRate,
+                pcmEncoding = if (format.pcmEncoding == Format.NO_VALUE) 0 else format.pcmEncoding
+            )
         }
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
@@ -255,33 +489,38 @@ class DualPlayerEngine @Inject constructor(
 
             // --- Pre-Resolve Next/Prev Tracks with Debounce to prevent flooding ---
             preResolutionJob?.cancel()
-            preResolutionJob = scope.launch {
-                delay(600) // Wait for user to stop skipping/navigating
-                try {
-                    val currentIndex = playerA.currentMediaItemIndex
-                    if (currentIndex != C.INDEX_UNSET) {
-                        val itemsToPreResolve = mutableListOf<Uri>()
-                        
-                        if (currentIndex + 1 < playerA.mediaItemCount) {
-                            playerA.getMediaItemAt(currentIndex + 1).localConfiguration?.uri?.let { 
-                                itemsToPreResolve.add(it) 
-                            }
-                        }
-                        if (currentIndex - 1 >= 0) {
-                            playerA.getMediaItemAt(currentIndex - 1).localConfiguration?.uri?.let { 
-                                itemsToPreResolve.add(it) 
-                            }
-                        }
+            // Battery: skip scheduling entirely for local-only neighbours.
+            // Pre-resolution only does meaningful work for cloud schemes (telegram,
+            // netease, qqmusic, navidrome, jellyfin, gdrive). For libraries with
+            // no cloud sources around the current index, the 600 ms delay + Main
+            // dispatch + scope.launch is pure overhead repeated on every track
+            // change. Snapshot the adjacent URIs synchronously so we can early-
+            // return before paying for the coroutine.
+            val currentIndex = playerA.currentMediaItemIndex
+            if (currentIndex != C.INDEX_UNSET) {
+                val adjacentCloudUris = mutableListOf<Uri>()
+                if (currentIndex + 1 < playerA.mediaItemCount) {
+                    playerA.getMediaItemAt(currentIndex + 1).localConfiguration?.uri?.let { uri ->
+                        if (uri.scheme in REMOTE_MEDIA_SCHEMES) adjacentCloudUris.add(uri)
+                    }
+                }
+                if (currentIndex - 1 >= 0) {
+                    playerA.getMediaItemAt(currentIndex - 1).localConfiguration?.uri?.let { uri ->
+                        if (uri.scheme in REMOTE_MEDIA_SCHEMES) adjacentCloudUris.add(uri)
+                    }
+                }
 
-                        for (uriToResolve in itemsToPreResolve) {
-                            val scheme = uriToResolve.scheme
-                            if (scheme == "telegram" || scheme == "netease" || scheme == "qqmusic" || scheme == "navidrome" || scheme == "jellyfin" || scheme == "gdrive") {
+                if (adjacentCloudUris.isNotEmpty()) {
+                    preResolutionJob = scope.launch {
+                        delay(600) // Wait for user to stop skipping/navigating
+                        try {
+                            for (uriToResolve in adjacentCloudUris) {
                                 resolveCloudUri(uriToResolve)
                             }
+                        } catch (e: Exception) {
+                            Timber.tag("DualPlayerEngine").w(e, "Error during pre-resolution in onMediaItemTransition")
                         }
                     }
-                } catch (e: Exception) {
-                    Timber.tag("DualPlayerEngine").w(e, "Error during pre-resolution in onMediaItemTransition")
                 }
             }
         }
@@ -297,12 +536,21 @@ class DualPlayerEngine @Inject constructor(
             when (playbackState) {
                 Player.STATE_BUFFERING -> {
                     val now = SystemClock.elapsedRealtime()
+                    if (bufferingStartedAtMs == 0L) bufferingStartedAtMs = now
                     val timeSincePlayingMs = now - lastPlayingAtMs
                     val timeSinceSeekMs = now - lastSeekAtMs
+                    val timeSinceTransitionMs = now - lastTransitionFinishedAtMs
                     val isPostSeekBuffering = lastSeekAtMs > 0L && timeSinceSeekMs < 1_500L
-                    if (audioOffloadEnabled && !transitionRunning &&
-                        lastPlayingAtMs > 0L && timeSincePlayingMs < 500L &&
-                        !isPostSeekBuffering
+                    val isPostTransitionBuffering = lastTransitionFinishedAtMs > 0L &&
+                        timeSinceTransitionMs < POST_TRANSITION_OFFLOAD_GUARD_MS
+                    if (shouldDisableAudioOffloadOnEarlyBuffering(
+                            audioOffloadEnabled = audioOffloadEnabled,
+                            transitionRunning = transitionRunning,
+                            lastPlayingAtMs = lastPlayingAtMs,
+                            timeSincePlayingMs = timeSincePlayingMs,
+                            isPostSeekBuffering = isPostSeekBuffering,
+                            isPostTransitionBuffering = isPostTransitionBuffering
+                        )
                     ) {
                         disableAudioOffloadForSession(
                             reason = "HAL offload reset detected: STATE_BUFFERING after ${timeSincePlayingMs}ms of playback"
@@ -311,7 +559,20 @@ class DualPlayerEngine @Inject constructor(
                         scheduleAudioOffloadFallbackIfNeeded(playerA)
                     }
                 }
-                Player.STATE_READY, Player.STATE_IDLE, Player.STATE_ENDED -> cancelAudioOffloadFallback()
+                Player.STATE_READY -> {
+                    if (bufferingStartedAtMs > 0L) {
+                        PerformanceMetrics.recordTiming(
+                            PerformanceMetrics.Timings.PLAYBACK_PREPARE,
+                            SystemClock.elapsedRealtime() - bufferingStartedAtMs
+                        )
+                        bufferingStartedAtMs = 0L
+                    }
+                    scheduleAudioOffloadFallbackIfNeeded(playerA)
+                }
+                Player.STATE_IDLE, Player.STATE_ENDED -> {
+                    bufferingStartedAtMs = 0L
+                    cancelAudioOffloadFallback()
+                }
             }
         }
 
@@ -326,6 +587,18 @@ class DualPlayerEngine @Inject constructor(
                 lastSeekAtMs = SystemClock.elapsedRealtime()
             }
         }
+    }
+
+    private fun addMasterPlayerListeners(player: ExoPlayer) {
+        player.addListener(masterPlayerListener)
+        player.addAnalyticsListener(masterPlayerListener)
+        player.addAudioOffloadListener(masterPlayerListener)
+    }
+
+    private fun removeMasterPlayerListeners(player: ExoPlayer) {
+        player.removeListener(masterPlayerListener)
+        player.removeAnalyticsListener(masterPlayerListener)
+        player.removeAudioOffloadListener(masterPlayerListener)
     }
 
     fun addPlayerSwapListener(listener: (Player) -> Unit) {
@@ -379,6 +652,13 @@ class DualPlayerEngine @Inject constructor(
     private var isReleased = false
     private val resolvedUriCache = LruCache<String, Uri>(100)
 
+    // Whether the OS classifies this as a low-RAM device. Used to cap the player's max
+    // prefetch depth so hi-res/lossless buffering (and the second player during a crossfade)
+    // can't balloon peak memory on constrained hardware. Cached: it never changes at runtime.
+    private val isLowRamDevice: Boolean by lazy {
+        (context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager)?.isLowRamDevice == true
+    }
+
     fun initialize() {
         if (!isReleased && ::playerA.isInitialized && playerA.applicationLooper.thread.isAlive) return
         if (scope.coroutineContext[Job]?.isActive != true) {
@@ -386,6 +666,8 @@ class DualPlayerEngine @Inject constructor(
         }
 
         if (::playerA.isInitialized) {
+            removeMasterPlayerListeners(playerA)
+            onPlayerAboutToBeReleasedListener?.invoke(playerA)
             try { playerA.release() } catch (e: Exception) { /* Ignore */ }
         }
         playerB?.let { try { it.release() } catch (e: Exception) { /* Ignore */ } }
@@ -393,8 +675,7 @@ class DualPlayerEngine @Inject constructor(
 
         playerA = buildPlayer()
 
-        playerA.addListener(masterPlayerListener)
-        playerA.addAnalyticsListener(masterPlayerListener)
+        addMasterPlayerListeners(playerA)
 
         _activeAudioSessionId.value = playerA.audioSessionId
         isReleased = false
@@ -404,6 +685,7 @@ class DualPlayerEngine @Inject constructor(
         resetPreparedWindowState()
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun requestAudioFocus() {
         if (audioFocusRequest != null) return
 
@@ -448,24 +730,30 @@ class DualPlayerEngine @Inject constructor(
 
     private fun scheduleAudioOffloadFallbackIfNeeded(player: ExoPlayer) {
         cancelAudioOffloadFallback()
-        if (!audioOffloadEnabled || transitionRunning || !player.playWhenReady) return
+        if (!audioOffloadEnabled || transitionRunning || !player.playWhenReady || player.isPlaying) return
         if (!isLikelyLocalMedia(player.currentMediaItem)) return
 
         val watchedMediaId = player.currentMediaItem?.mediaId ?: return
+        if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) return
         bufferingFallbackJob = scope.launch {
-            delay(AUDIO_OFFLOAD_BUFFERING_FALLBACK_MS)
+            delay(AUDIO_OFFLOAD_STALL_FALLBACK_MS)
 
             val currentMediaId = player.currentMediaItem?.mediaId
-            if (!audioOffloadEnabled || transitionRunning || player !== playerA) return@launch
-            if (currentMediaId != watchedMediaId) return@launch
-            if (player.playbackState != Player.STATE_BUFFERING || player.isPlaying || !player.playWhenReady) return@launch
-            if (player.currentPosition > 1_000L || player.bufferedPosition <= 0L) return@launch
-
-            val timeSincePlayRequestMs = (SystemClock.elapsedRealtime() - lastPlayWhenReadyAtMs).coerceAtLeast(0L)
-            if (timeSincePlayRequestMs < AUDIO_OFFLOAD_BUFFERING_FALLBACK_MS) return@launch
+            val shouldFallback = shouldTriggerAudioOffloadStallFallback(
+                audioOffloadEnabled = audioOffloadEnabled,
+                transitionRunning = transitionRunning,
+                isCurrentMasterPlayer = player === playerA,
+                mediaIdMatches = currentMediaId == watchedMediaId,
+                playbackState = player.playbackState,
+                isPlaying = player.isPlaying,
+                playWhenReady = player.playWhenReady,
+                playbackSuppressionReason = player.playbackSuppressionReason
+            )
+            if (!shouldFallback) return@launch
 
             disableAudioOffloadForSession(
-                reason = "Local media stayed buffering for ${AUDIO_OFFLOAD_BUFFERING_FALLBACK_MS}ms"
+                reason = "Local media did not produce audio for " +
+                    "${AUDIO_OFFLOAD_STALL_FALLBACK_MS}ms (state=${player.playbackState})"
             )
         }
     }
@@ -507,15 +795,13 @@ class DualPlayerEngine @Inject constructor(
     }
 
     private fun shouldDisableAudioOffloadByDefault(): Boolean {
-        val manufacturer = Build.MANUFACTURER.lowercase()
-        val brand = Build.BRAND.lowercase()
-        val isXiaomiFamilyDevice = manufacturer == "xiaomi" || brand == "xiaomi" || brand == "redmi" || brand == "poco"
-        if (isXiaomiFamilyDevice && Build.VERSION.SDK_INT >= 36) return true
-
-        val isGooglePixel = manufacturer == "google" && brand == "google"
-        if (isGooglePixel && Build.VERSION.SDK_INT >= 34) return true
-
-        return false
+        return shouldDisableAudioOffloadByDefaultForDevice(
+            manufacturer = Build.MANUFACTURER,
+            brand = Build.BRAND,
+            model = Build.MODEL,
+            hardware = Build.HARDWARE,
+            sdkInt = Build.VERSION.SDK_INT
+        )
     }
 
     private fun disableAudioOffloadForSession(reason: String) {
@@ -526,6 +812,7 @@ class DualPlayerEngine @Inject constructor(
         }
 
         audioOffloadEnabled = false
+        PerformanceMetrics.recordOffloadFallback(reason, SystemClock.elapsedRealtime())
         rebuildPlayersPreservingMasterState(
             logMessage = "Audio offload disabled for current session. $reason"
         )
@@ -544,16 +831,15 @@ class DualPlayerEngine @Inject constructor(
         val pauseAtEnd = playerA.pauseAtEndOfMediaItems
         val playbackParameters: PlaybackParameters = playerA.playbackParameters
 
-        playerA.removeListener(masterPlayerListener)
-        playerA.removeAnalyticsListener(masterPlayerListener)
+        removeMasterPlayerListeners(playerA)
+        onPlayerAboutToBeReleasedListener?.invoke(playerA)
         playerA.release()
         playerB?.release()
         playerB = null
 
         playerA = buildPlayer()
 
-        playerA.addListener(masterPlayerListener)
-        playerA.addAnalyticsListener(masterPlayerListener)
+        addMasterPlayerListeners(playerA)
         playerA.volume = volume
         playerA.pauseAtEndOfMediaItems = pauseAtEnd
         playerA.playbackParameters = playbackParameters
@@ -663,8 +949,25 @@ class DualPlayerEngine @Inject constructor(
         val extractorsFactory = DefaultExtractorsFactory()
             .setMp4ExtractorFlags(Mp4Extractor.FLAG_WORKAROUND_IGNORE_EDIT_LISTS)
 
+        // Time-based buffering normalizes start/load behaviour across formats. With
+        // prioritizeTimeOverSizeThresholds=true the loader keys off buffered *duration*
+        // instead of buffered *bytes*, so a 24/96 FLAC (~5-9 Mbps) and a 128 kbps MP3
+        // reach READY after the same seconds buffered rather than the same megabytes —
+        // removing the "some files take longer to start" gap that scaled with bitrate.
+        // bufferForPlayback is lowered from 5s to 2s so high-bitrate/lossless tracks
+        // (which read/decode more data per second) start about as fast as compressed ones,
+        // while bufferForPlaybackAfterRebuffer stays at 5s to keep recovery safe on slow
+        // storage and remote streams. On low-RAM devices the max prefetch window is reduced
+        // (see loadControlBufferProfileFor) to cap peak memory without changing start latency.
+        val bufferProfile = loadControlBufferProfileFor(isLowRamDevice)
         val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(30_000, 60_000, 5_000, 5_000)
+            .setBufferDurationsMs(
+                bufferProfile.minBufferMs,
+                bufferProfile.maxBufferMs,
+                bufferProfile.bufferForPlaybackMs,
+                bufferProfile.bufferForPlaybackAfterRebufferMs
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
             .build()
 
         return ExoPlayer.Builder(context, renderersFactory)
@@ -792,13 +1095,13 @@ class DualPlayerEngine @Inject constructor(
     private suspend fun resolveNavidromeUriAsync(uriString: String): Uri? = withContext(Dispatchers.IO) {
         if (!navidromeStreamProxy.ensureReady(5_000L)) return@withContext null
         navidromeStreamProxy.warmUpStreamUrl(uriString)
-        navidromeStreamProxy.resolveNavidromeUri(uriString)?.let { Uri.parse(it) }
+        navidromeStreamProxy.resolveNavidromeUri(uriString)?.toUri()
     }
 
     private suspend fun resolveJellyfinUriAsync(uriString: String): Uri? = withContext(Dispatchers.IO) {
         if (!jellyfinStreamProxy.ensureReady(5_000L)) return@withContext null
         jellyfinStreamProxy.warmUpStreamUrl(uriString)
-        jellyfinStreamProxy.resolveJellyfinUri(uriString)?.let { Uri.parse(it) }
+        jellyfinStreamProxy.resolveJellyfinUri(uriString)?.toUri()
     }
 
     private suspend fun resolveGDriveUriAsync(uriString: String): Uri? = withContext(Dispatchers.IO) {
@@ -807,7 +1110,7 @@ class DualPlayerEngine @Inject constructor(
             return@withContext null
         }
         if (!gdriveStreamProxy.ensureReady(5_000L)) return@withContext null
-        gdriveStreamProxy.resolveGDriveUri(uriString)?.let { Uri.parse(it) }
+        gdriveStreamProxy.resolveGDriveUri(uriString)?.toUri()
     }
 
     suspend fun resolveMediaItem(mediaItem: MediaItem): MediaItem {
@@ -897,6 +1200,7 @@ class DualPlayerEngine @Inject constructor(
     fun performTransition(settings: TransitionSettings) {
         transitionJob?.cancel()
         transitionRunning = true
+        transitionStartedAtMs = SystemClock.elapsedRealtime()
         transitionJob = scope.launch {
             try {
                 performOverlapTransition(settings)
@@ -909,6 +1213,14 @@ class DualPlayerEngine @Inject constructor(
                 playerB?.stop()
             } finally {
                 transitionRunning = false
+                lastTransitionFinishedAtMs = SystemClock.elapsedRealtime()
+                if (transitionStartedAtMs > 0L) {
+                    PerformanceMetrics.recordTiming(
+                        PerformanceMetrics.Timings.TRANSITION,
+                        SystemClock.elapsedRealtime() - transitionStartedAtMs
+                    )
+                    transitionStartedAtMs = 0L
+                }
                 onTransitionFinishedListeners.forEach { it() }
             }
         }
@@ -967,8 +1279,7 @@ class DualPlayerEngine @Inject constructor(
         incomingPlayer.volume = incomingTrackReplayGainVolume ?: 1f
         incomingTrackReplayGainVolume = null
 
-        outgoingPlayer.removeListener(masterPlayerListener)
-        outgoingPlayer.removeAnalyticsListener(masterPlayerListener)
+        removeMasterPlayerListeners(outgoingPlayer)
 
         playerA = incomingPlayer
         playerB = outgoingPlayer
@@ -978,8 +1289,7 @@ class DualPlayerEngine @Inject constructor(
 
         playerA.pauseAtEndOfMediaItems = false
         playerB?.pauseAtEndOfMediaItems = false
-        playerA.addListener(masterPlayerListener)
-        playerA.addAnalyticsListener(masterPlayerListener)
+        addMasterPlayerListeners(playerA)
         if (playerA.playWhenReady) requestAudioFocus()
 
         onPlayerSwappedListeners.forEach { it(playerA) }
@@ -1116,8 +1426,8 @@ class DualPlayerEngine @Inject constructor(
         scope.coroutineContext[Job]?.cancel()
         abandonAudioFocus()
         if (::playerA.isInitialized) {
-            playerA.removeListener(masterPlayerListener)
-            playerA.removeAnalyticsListener(masterPlayerListener)
+            removeMasterPlayerListeners(playerA)
+            onPlayerAboutToBeReleasedListener?.invoke(playerA)
             playerA.release()
         }
         playerB?.release()

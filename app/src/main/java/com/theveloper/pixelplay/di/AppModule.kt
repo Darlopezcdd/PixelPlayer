@@ -164,7 +164,8 @@ object AppModule {
             PixelPlayDatabase.MIGRATION_37_38,
             PixelPlayDatabase.MIGRATION_38_39,
             PixelPlayDatabase.MIGRATION_39_40,
-            PixelPlayDatabase.MIGRATION_40_41
+            PixelPlayDatabase.MIGRATION_40_41,
+            PixelPlayDatabase.MIGRATION_41_42
         )
             .addCallback(PixelPlayDatabase.createRuntimeArtifactsCallback())
             .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
@@ -292,7 +293,16 @@ object AppModule {
             .allowHardware(true) // Re-enable hardware bitmaps for better performance
             .memoryCache {
                 MemoryCache.Builder(context)
-                    .maxSizePercent(0.20) // Use 20% of app memory for image cache
+                    // Hard 40 MB cap instead of 20%-of-heap. Rationale:
+                    //  - On large-heap devices (Pixel 8 etc.) the percentage
+                    //    expanded to ~80–100 MB, far beyond what an album-art
+                    //    workload needs.
+                    //  - allowHardware(true) keeps most decoded pixels in GPU
+                    //    memory, so the MemoryCache mostly tracks Bitmap
+                    //    references — 40 MB still buffers ~100+ album arts.
+                    //  - Tighter cap = less GC pressure and less thermal
+                    //    headroom spent on memory pressure during long sessions.
+                    .maxSizeBytes(40 * 1024 * 1024)
                     .build()
             }
             .diskCache {

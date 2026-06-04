@@ -385,11 +385,12 @@ fun FullPlayerContent(
         }
     }
 
-    val onAlbumSongSelected: (Song) -> Unit = { newSong ->
+    val onAlbumSongSelected: (Song, Int) -> Unit = { newSong, index ->
         playerViewModel.showAndPlaySong(
             song = newSong,
             contextSongs = currentPlaybackQueue,
-            queueName = currentQueueSourceName
+            queueName = currentQueueSourceName,
+            indexInQueue = index
         )
     }
 
@@ -957,6 +958,7 @@ fun FullPlayerContent(
             colorScheme = LocalMaterialTheme.current,
             onBackClick = { showLyricsSheet = false },
             onSaveLyricsToFile = playerViewModel::saveLyricsToFile,
+            onTranslateViaAi = { playerViewModel.translateLyricsViaAi() },
             onSeekTo = { playerViewModel.seekTo(it) },
             onPlayPause = {
                 playerViewModel.playPause()
@@ -1009,7 +1011,7 @@ private fun FullPlayerAlbumCoverSection(
     placeholderOnColor: Color,
     albumArtQuality: AlbumArtQuality,
     requestedScrollIndex: Int?,
-    onSongSelected: (Song) -> Unit,
+    onSongSelected: (Song, Int) -> Unit,
     onAlbumClick: (Song) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1080,9 +1082,9 @@ private fun FullPlayerAlbumCoverSection(
                 expansionFraction = 1f,
                 currentMediaItemIndex = currentMediaItemIndex,
                 requestedScrollIndex = requestedScrollIndex,
-                onSongSelected = { newSong ->
-                    if (newSong.id != song.id) {
-                        onSongSelected(newSong)
+                onSongSelected = { newSong, index ->
+                    if (newSong.id != song.id || index != currentMediaItemIndex) {
+                        onSongSelected(newSong, index)
                     }
                 },
                 onAlbumClick = onAlbumClick,
@@ -1816,6 +1818,7 @@ private fun PlayerProgressBarSection(
                     inactiveTrackColor = inactiveTrackColor,
                     interactionSource = interactionSource,
                     isPlaying = shouldAnimateWavyProgress,
+                    isVisible = isVisible,
                     trackEdgePadding = progressSectionHorizontalInset
                 )
             }
@@ -1843,6 +1846,7 @@ private fun EfficientSlider(
     inactiveTrackColor: Color,
     interactionSource: MutableInteractionSource,
     isPlaying: Boolean,
+    isVisible: Boolean,
     trackEdgePadding: Dp
 ) {
     val haptics = LocalHapticFeedback.current
@@ -1869,6 +1873,7 @@ private fun EfficientSlider(
         inactiveTrackColor = inactiveTrackColor,
         thumbColor = thumbColor,
         isPlaying = isPlaying,
+        isVisible = isVisible,
         trackEdgePadding = trackEdgePadding,
         semanticsLabel = "Playback position",
         modifier = Modifier

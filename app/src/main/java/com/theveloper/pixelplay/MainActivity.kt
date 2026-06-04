@@ -11,6 +11,9 @@ import android.content.Context
 import android.content.ComponentName
 import android.content.Intent
 import android.os.Build
+import android.graphics.RenderEffect as AndroidRenderEffect
+import android.graphics.Shader as AndroidShader
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import android.os.Bundle
 import android.os.Trace
 import android.provider.Settings
@@ -38,6 +41,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -73,6 +77,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -140,6 +145,7 @@ import kotlinx.collections.immutable.persistentListOf
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlin.math.roundToInt
 
 import racra.compose.smooth_corner_rect_library.AbsoluteSmoothCornerShape
 import com.theveloper.pixelplay.presentation.utils.AppHapticsConfig
@@ -652,6 +658,8 @@ class MainActivity : ComponentActivity() {
         val navBarCompactMode by playerViewModel.navBarCompactMode.collectAsStateWithLifecycle()
         val navBarCornerRadiusRaw by playerViewModel.navBarCornerRadius.collectAsStateWithLifecycle()
         val navBarCornerRadius = sanitizeNavBarCornerRadius(navBarCornerRadiusRaw)
+        val useSmoothCorners by playerViewModel.useSmoothCorners.collectAsStateWithLifecycle()
+        val isMiniPlayerDismissing by playerViewModel.isMiniPlayerDismissing.collectAsStateWithLifecycle()
         val hapticsEnabled by playerViewModel.hapticsEnabled.collectAsStateWithLifecycle()
         val rootView = LocalView.current
         val platformHapticFeedback = LocalHapticFeedback.current
@@ -686,7 +694,7 @@ class MainActivity : ComponentActivity() {
         val navBarOccupiedHeight by remember(systemNavBarInset, navBarCompactMode) {
             derivedStateOf { resolveNavBarOccupiedHeight(systemNavBarInset, navBarCompactMode) }
         }
-        val navBarVisibilityProgress by animateFloatAsState(
+        val navBarVisibilityProgressState = animateFloatAsState(
             targetValue = if (shouldHideNavigationBar) 0f else 1f,
             animationSpec = tween(
                 durationMillis = 220,
@@ -694,6 +702,7 @@ class MainActivity : ComponentActivity() {
             ),
             label = "NavBarVisibilityProgress"
         )
+        val navBarVisibilityProgress by navBarVisibilityProgressState
         val visibleNavBarOccupiedHeight by remember(navBarOccupiedHeight, navBarVisibilityProgress) {
             derivedStateOf { navBarOccupiedHeight * navBarVisibilityProgress }
         }
@@ -789,33 +798,21 @@ class MainActivity : ComponentActivity() {
                         val showPlayerContentArea = currentSongId != null
                         val navBarElevation = 3.dp
 
-                        val animatedNavBarCornerRadius by animateDpAsState(
+                        val animatedNavBarCornerRadius = animateDpAsState(
                             targetValue = navBarCornerRadius.dp,
                             animationSpec = tween(400),
                             label = "NavBarCornerRadius"
                         )
 
-                        val actualShape = remember(navBarStyle, showPlayerContentArea, navBarCornerRadius, animatedNavBarCornerRadius) {
-                            DynamicSmoothCornerShape(
-                                topRadiusProvider = {
-                                    val fraction = playerViewModel.playerContentExpansionFraction.value
-                                    if (navBarStyle == NavBarStyle.FULL_WIDTH) {
-                                        lerp(navBarCornerRadius.dp, 26.dp, fraction)
-                                    } else if (showPlayerContentArea) {
-                                        if (fraction < 0.2f) {
-                                            lerp(navBarCornerRadius.dp, 26.dp, (fraction / 0.2f).coerceIn(0f, 1f))
-                                        } else {
-                                            26.dp
-                                        }
-                                    } else {
-                                        navBarCornerRadius.dp
-                                    }
-                                },
-                                bottomRadiusProvider = {
-                                    if (navBarStyle == NavBarStyle.FULL_WIDTH) 0.dp else animatedNavBarCornerRadius
-                                }
-                            )
-                        }
+                        val animatedDefaultTopCornerRadius = animateDpAsState(
+                            targetValue = if (showPlayerContentArea && !isMiniPlayerDismissing) 10.dp else navBarCornerRadius.dp,
+                            animationSpec = tween(400),
+                            label = "NavBarDefaultTopCornerRadius"
+                        )
+
+                        // Shape is now resolved per quantized radius in the draw phase
+                        // (see the Surface graphicsLayer below) instead of being
+                        // re-remembered every animation frame.
 
                         var componentHeightPx by remember { mutableStateOf(0) }
                         val density = LocalDensity.current
@@ -825,11 +822,15 @@ class MainActivity : ComponentActivity() {
                         val bottomBarPaddingPx = remember(bottomBarPadding, density) {
                             with(density) { bottomBarPadding.toPx() }
                         }
+                        val navBarElevationPx = remember(navBarElevation, density) {
+                            with(density) { navBarElevation.toPx() }
+                        }
+                        val navBarShapeCache = remember { NavBarShapeCache() }
 
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(visibleNavBarOccupiedHeight)
+                                .height(navBarOccupiedHeight)
                                 .clipToBounds()
                         ) {
                             val onSearchIconDoubleTap = remember(playerViewModel) {
@@ -843,19 +844,45 @@ class MainActivity : ComponentActivity() {
                                     .padding(bottom = bottomBarPadding)
                                     .onSizeChanged { componentHeightPx = it.height }
                                     .graphicsLayer {
-                                        val hideFraction = if (showPlayerContentArea) {
+                                        // Slide-down hide: covers both the player-expansion
+                                        // hide and the route-based hide as a pure translation,
+                                        // so child items never resize or get clipped/squished.
+                                        val expansionHide = if (showPlayerContentArea) {
                                             playerViewModel.playerContentExpansionFraction.value.coerceIn(0f, 1f)
                                         } else {
                                             0f
                                         }
+                                        val routeHide = (1f - navBarVisibilityProgressState.value).coerceIn(0f, 1f)
+                                        val hideFraction = maxOf(expansionHide, routeHide)
                                         translationY = (componentHeightPx + shadowOverflowPx + bottomBarPaddingPx) * hideFraction
                                         alpha = 1f
                                     }
                                     .height(navBarHeight)
-                                    .padding(horizontal = horizontalPadding),
-                                color = NavigationBarDefaults.containerColor,
-                                shape = actualShape,
-                                shadowElevation = navBarElevation
+                                    .padding(horizontal = horizontalPadding)
+                                    .graphicsLayer {
+                                        // Animated corner shape resolved in the draw phase:
+                                        // animating the radius re-clips this layer only — no
+                                        // recomposition and no layout pass for the bar.
+                                        val fraction = playerViewModel.playerContentExpansionFraction.value
+                                        val topDp = when {
+                                            navBarStyle == NavBarStyle.DEFAULT -> animatedDefaultTopCornerRadius.value
+                                            navBarStyle == NavBarStyle.FULL_WIDTH -> lerp(navBarCornerRadius.dp, 26.dp, fraction)
+                                            showPlayerContentArea -> if (fraction < 0.2f) {
+                                                lerp(navBarCornerRadius.dp, 26.dp, (fraction / 0.2f).coerceIn(0f, 1f))
+                                            } else {
+                                                26.dp
+                                            }
+                                            else -> navBarCornerRadius.dp
+                                        }
+                                        val bottomDp = when (navBarStyle) {
+                                            NavBarStyle.FULL_WIDTH -> 0.dp
+                                            else -> animatedNavBarCornerRadius.value
+                                        }
+                                        shape = navBarShapeCache.get(this, topDp.toPx(), bottomDp.toPx(), useSmoothCorners)
+                                        clip = true
+                                        shadowElevation = navBarElevationPx
+                                    },
+                                color = NavigationBarDefaults.containerColor
                             ) {
                                 PlayerInternalNavigationBar(
                                     navController = navController,
@@ -903,14 +930,34 @@ class MainActivity : ComponentActivity() {
                             bottomSpacerPx = spacerPx
                         )
 
-                        AppNavigation(
-                            playerViewModel = playerViewModel,
-                            navController = navController,
-                            paddingValues = innerPadding,
-                            userPreferencesRepository = userPreferencesRepository,
-                            onSearchBarActiveChange = { isSearchBarActive = it },
-                            onOpenSidebar = { scope.launch { drawerState.open() } }
-                        )
+                        val expansionFractionProvider = remember(playerViewModel.playerContentExpansionFraction) {
+                            { playerViewModel.playerContentExpansionFraction.value }
+                        }
+                        val blurEffectCache = remember { BlurEffectCache() }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                        val fraction = expansionFractionProvider()
+                                        // Quantize to 4px steps: rebuild the RenderEffect only
+                                        // when the blur crosses a step, reuse the cached object
+                                        // every other frame.
+                                        val quantizedBlurPx = (fraction * 100f / 4f).roundToInt() * 4f
+                                        renderEffect = blurEffectCache.get(quantizedBlurPx)
+                                    }
+                                }
+                        ) {
+                            AppNavigation(
+                                playerViewModel = playerViewModel,
+                                navController = navController,
+                                paddingValues = innerPadding,
+                                userPreferencesRepository = userPreferencesRepository,
+                                onSearchBarActiveChange = { isSearchBarActive = it },
+                                onOpenSidebar = { scope.launch { drawerState.open() } }
+                            )
+                        }
 
                         val isExpandedOrExpanding by remember {
                             derivedStateOf {
@@ -926,7 +973,11 @@ class MainActivity : ComponentActivity() {
                             Box(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .background(MaterialTheme.colorScheme.surfaceContainerLowest.copy(alpha = 0.6f))
+                                    .background(
+                                        MaterialTheme.colorScheme.surfaceContainerLowest.copy(
+                                            alpha = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) 0.35f else 0.6f
+                                        )
+                                    )
                                     .pointerInput(Unit) {
                                         detectTapGestures {
                                             playerViewModel.collapsePlayerSheet()
@@ -1088,27 +1139,121 @@ class MainActivity : ComponentActivity() {
 
 }
 
+/**
+ * Caches the (expensive) RenderEffect Java object so we don't allocate a new
+ * blur every animation frame. The radius is quantized at the call site, so this
+ * only rebuilds ~25 times across the whole expand animation instead of 60+/sec.
+ */
+private class BlurEffectCache {
+    private var lastRadiusPx: Float = Float.NaN
+    private var cached: androidx.compose.ui.graphics.RenderEffect? = null
+
+    fun get(radiusPx: Float): androidx.compose.ui.graphics.RenderEffect? {
+        if (radiusPx <= 0f) {
+            lastRadiusPx = 0f
+            cached = null
+            return null
+        }
+        if (radiusPx != lastRadiusPx) {
+            lastRadiusPx = radiusPx
+            cached = AndroidRenderEffect
+                .createBlurEffect(radiusPx, radiusPx, AndroidShader.TileMode.CLAMP)
+                .asComposeRenderEffect()
+        }
+        return cached
+    }
+}
+
+/**
+ * Returns a cached Shape instance for a quantized (top, bottom) radius pair.
+ * Because the instance identity is stable while the radii don't move past a
+ * sub-pixel threshold, the graphics layer reuses its cached Outline between
+ * frames and only re-clips when the radius actually changes.
+ */
+private class NavBarShapeCache {
+    private var lastTopPx: Float = Float.NaN
+    private var lastBottomPx: Float = Float.NaN
+    private var lastSmooth: Boolean = true
+    private var cached: androidx.compose.ui.graphics.Shape = RectangleShape
+
+    fun get(
+        density: androidx.compose.ui.unit.Density,
+        topPx: Float,
+        bottomPx: Float,
+        smooth: Boolean
+    ): androidx.compose.ui.graphics.Shape {
+        if (smooth == lastSmooth &&
+            !lastTopPx.isNaN() &&
+            kotlin.math.abs(topPx - lastTopPx) < 0.5f &&
+            kotlin.math.abs(bottomPx - lastBottomPx) < 0.5f
+        ) {
+            return cached
+        }
+        lastTopPx = topPx
+        lastBottomPx = bottomPx
+        lastSmooth = smooth
+        cached = with(density) {
+            DynamicSmoothCornerShape(
+                useSmoothCorners = smooth,
+                topRadius = topPx.toDp(),
+                bottomRadius = bottomPx.toDp()
+            )
+        }
+        return cached
+    }
+}
+
+/**
+ * Fixed-radius corner shape. Swaps AbsoluteSmoothCornerShape for a plain
+ * RoundedCornerShape when smooth corners are disabled in settings. The radius
+ * values are identical in both branches, so the animated radius behavior is
+ * unchanged regardless of which delegate is active. The resulting Outline is
+ * cached per (size, layoutDirection) so repeated draws are cheap.
+ */
 private class DynamicSmoothCornerShape(
-    private val topRadiusProvider: () -> androidx.compose.ui.unit.Dp,
-    private val bottomRadiusProvider: () -> androidx.compose.ui.unit.Dp
+    private val useSmoothCorners: Boolean,
+    private val topRadius: androidx.compose.ui.unit.Dp,
+    private val bottomRadius: androidx.compose.ui.unit.Dp
 ) : androidx.compose.ui.graphics.Shape {
+
+    private var cachedSize: androidx.compose.ui.geometry.Size =
+        androidx.compose.ui.geometry.Size.Unspecified
+    private var cachedLayoutDirection: androidx.compose.ui.unit.LayoutDirection? = null
+    private var cachedOutline: androidx.compose.ui.graphics.Outline? = null
+
     override fun createOutline(
         size: androidx.compose.ui.geometry.Size,
         layoutDirection: androidx.compose.ui.unit.LayoutDirection,
         density: androidx.compose.ui.unit.Density
     ): androidx.compose.ui.graphics.Outline {
-        val topRadius = topRadiusProvider()
-        val bottomRadius = bottomRadiusProvider()
-        val delegate = AbsoluteSmoothCornerShape(
-            cornerRadiusTL = topRadius,
-            smoothnessAsPercentTL = 60,
-            cornerRadiusTR = topRadius,
-            smoothnessAsPercentTR = 60,
-            cornerRadiusBL = bottomRadius,
-            smoothnessAsPercentBL = 60,
-            cornerRadiusBR = bottomRadius,
-            smoothnessAsPercentBR = 60
-        )
-        return delegate.createOutline(size, layoutDirection, density)
+        cachedOutline?.let {
+            if (cachedSize == size && cachedLayoutDirection == layoutDirection) return it
+        }
+
+        val delegate: androidx.compose.ui.graphics.Shape = if (useSmoothCorners) {
+            AbsoluteSmoothCornerShape(
+                cornerRadiusTL = topRadius,
+                smoothnessAsPercentTL = 60,
+                cornerRadiusTR = topRadius,
+                smoothnessAsPercentTR = 60,
+                cornerRadiusBL = bottomRadius,
+                smoothnessAsPercentBL = 60,
+                cornerRadiusBR = bottomRadius,
+                smoothnessAsPercentBR = 60
+            )
+        } else {
+            RoundedCornerShape(
+                topStart = topRadius,
+                topEnd = topRadius,
+                bottomEnd = bottomRadius,
+                bottomStart = bottomRadius
+            )
+        }
+
+        return delegate.createOutline(size, layoutDirection, density).also {
+            cachedSize = size
+            cachedLayoutDirection = layoutDirection
+            cachedOutline = it
+        }
     }
 }
