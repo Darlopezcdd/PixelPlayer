@@ -99,6 +99,7 @@ class PlayerViewModelTest {
     private val mockThemeStateHolder: ThemeStateHolder = mockk(relaxed = true)
     private val mockMultiSelectionStateHolder: MultiSelectionStateHolder = mockk(relaxed = true)
     private val mockPlaylistSelectionStateHolder: PlaylistSelectionStateHolder = mockk(relaxed = true)
+    private val mockMediaMapper: com.theveloper.pixelplay.data.media.MediaMapper = mockk(relaxed = true)
     private lateinit var mockMediaControllerFactory: com.theveloper.pixelplay.data.media.MediaControllerFactory
 
     private val testDispatcher = StandardTestDispatcher()
@@ -123,6 +124,19 @@ class PlayerViewModelTest {
         MockKAnnotations.init(this)
 
         mockkStatic(ContextCompat::class)
+        mockkStatic(android.net.Uri::class)
+        every { android.net.Uri.parse(any()) } answers {
+            val uriString = firstArg<String?>()
+            if (uriString == null) {
+                mockk<android.net.Uri>()
+            } else {
+                val mockUri = mockk<android.net.Uri>(relaxed = true)
+                every { mockUri.toString() } returns uriString
+                val schemeVal = if (uriString.contains("://")) uriString.substringBefore("://") else null
+                every { mockUri.scheme } returns schemeVal
+                mockUri
+            }
+        }
         val directExecutor = java.util.concurrent.Executor { it.run() }
         every { ContextCompat.getMainExecutor(any()) } returns directExecutor
         every { mockTelegramCacheManager.embeddedArtUpdated } returns kotlinx.coroutines.flow.MutableSharedFlow()
@@ -281,6 +295,7 @@ class PlayerViewModelTest {
             sessionToken,
             mockMediaControllerFactory
         )
+        playerViewModel.mediaMapper = mockMediaMapper
     }
 
     @AfterEach

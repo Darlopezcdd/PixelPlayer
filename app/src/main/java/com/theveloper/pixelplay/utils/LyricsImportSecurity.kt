@@ -164,9 +164,17 @@ object LyricsImportSecurity {
         val decoded = decodeText(payload)
             ?: return LyricsImportValidationResult.Invalid(LyricsImportFailureReason.INVALID_ENCODING)
 
+        val lowerDecoded = decoded.lowercase()
+        if (lowerDecoded.contains("<!doctype") || lowerDecoded.contains("<!entity")) {
+            return LyricsImportValidationResult.Invalid(LyricsImportFailureReason.INVALID_LYRICS_CONTENT)
+        }
+
         for (normalized in normalizationCandidates(decoded, format)) {
             val validation = validateImportedLrcContent(normalized)
             if (validation is LyricsImportValidationResult.Valid) {
+                if (format == LyricsDocumentFormat.LRC && validation.value.parsedLyrics.synced.isNullOrEmpty()) {
+                    continue
+                }
                 return validation
             }
         }

@@ -71,7 +71,12 @@ class LyricsStateHolderTest {
             forcePickResults = false,
             sourcePreference = com.theveloper.pixelplay.data.model.LyricsSourcePreference.API_FIRST
         ) { "Lyrics already available" }
-        scope.advanceUntilIdle()
+        var attempts = 0
+        while (holder.searchUiState.value !is LyricsSearchUiState.Success && attempts < 200) {
+            Thread.sleep(10)
+            scope.testScheduler.runCurrent()
+            attempts++
+        }
 
         assertThat(holder.searchUiState.value).isEqualTo(LyricsSearchUiState.Success(storedLyrics))
         coVerify(exactly = 1) { musicRepository.getStoredLyrics(song) }

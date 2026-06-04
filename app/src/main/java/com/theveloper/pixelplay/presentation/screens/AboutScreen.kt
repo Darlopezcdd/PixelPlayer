@@ -135,6 +135,15 @@ private val CoreMaintainer = Contributor(
 
 private val PinnedCommunityMembers = listOf(
     Contributor(
+        id = "darlopezcdd",
+        displayName = "@Darlopezcdd",
+        role = "Downloader developer",
+        detail = "Developed the Deezload Telegram music downloader feature.",
+        badge = "Feature Creator",
+        iconRes = R.drawable.round_developer_board_24,
+        githubUrl = "https://github.com/Darlopezcdd",
+    ),
+    Contributor(
         id = "lostf1sh",
         displayName = "@lostf1sh",
         role = "Most active contributor",
