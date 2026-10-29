@@ -346,6 +346,19 @@ object MediaItemBuilder {
     }
 
     private fun isInsideAppStorage(context: Context, file: File): Boolean {
+        val forbiddenRoots = listOf(
+            File(context.filesDir, "tdlib"),
+            File(context.filesDir, "tdlib_files"),
+            File(context.filesDir, "datastore")
+        ).mapNotNull { root -> runCatching { root.canonicalFile }.getOrNull() }
+
+        if (forbiddenRoots.any { root ->
+                file.path == root.path || file.path.startsWith(root.path + File.separator)
+            }
+        ) {
+            return false
+        }
+
         val storageRoots = listOf(context.cacheDir, context.filesDir)
             .mapNotNull { root -> runCatching { root.canonicalFile }.getOrNull() }
 

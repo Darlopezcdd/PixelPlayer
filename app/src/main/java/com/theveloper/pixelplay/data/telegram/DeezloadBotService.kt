@@ -1,7 +1,11 @@
 package com.theveloper.pixelplay.data.telegram
 
+import android.content.ContentValues
 import android.content.Context
 import android.media.MediaScannerConnection
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -258,9 +262,9 @@ class DeezloadBotService @Inject constructor(
                     .first { update ->
                         val file = update.file
                         if (file.local.isDownloadingActive) {
-                            val totalSize = file.expectedSize
-                            if (totalSize > 0) {
-                                val percent = ((file.local.downloadedSize * 100) / totalSize).toInt()
+                            val totalSize = file.expectedSize.toLong()
+                            if (totalSize > 0L) {
+                                val percent = ((file.local.downloadedSize.toLong() * 100L) / totalSize).toInt()
                                     .coerceIn(0, 99)
                                 emit(DeezloadDownloadProgress.Downloading(percent))
                             }
@@ -282,6 +286,7 @@ class DeezloadBotService @Inject constructor(
                     emit(DeezloadDownloadProgress.SavingToLibrary)
                     val savedPath = saveToMusicLibrary(finalFile.local.path, finalTitle, finalArtist, mimeType)
                     if (savedPath != null) {
+                        cleanupTdlibFile(audioFileId, finalFile.local.path)
                         scanFile(savedPath, mimeType)
                         emit(DeezloadDownloadProgress.Completed(savedPath = savedPath, song = null))
                     } else {
@@ -297,6 +302,7 @@ class DeezloadBotService @Inject constructor(
             emit(DeezloadDownloadProgress.SavingToLibrary)
             val savedPath = saveToMusicLibrary(downloadedPath, finalTitle, finalArtist, mimeType)
             if (savedPath != null) {
+                cleanupTdlibFile(audioFileId, downloadedPath)
                 scanFile(savedPath, mimeType)
                 emit(DeezloadDownloadProgress.Completed(savedPath = savedPath, song = null))
             } else {
@@ -340,30 +346,86 @@ class DeezloadBotService @Inject constructor(
                 else -> sourceFile.extension.ifEmpty { "flac" }
             }
 
-            // Create destination directory
-            val musicDir = android.os.Environment.getExternalStoragePublicDirectory(
-                android.os.Environment.DIRECTORY_MUSIC
-            )
+            val resolvedMimeType = when (extension) {
+                "flac" -> "audio/flac"
+                "mp3" -> "audio/mpeg"
+                "m4a" -> "audio/mp4"
+                "wav" -> "audio/wav"
+                "ogg" -> "audio/ogg"
+                "aac" -> "audio/aac"
+                else -> mimeType.ifBlank { "audio/flac" }
+            }
+
+            // Sanitize filename
+            val safeTitle = title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifEmpty { "Unknown Title" }
+            val safeArtist = artist.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifEmpty { "Unknown Artist" }
+            val baseName = "$safeArtist - $safeTitle"
+            val fileName = "$baseName.$extension"
+
+            val musicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
             val downloadDir = File(musicDir, DOWNLOAD_DIR_NAME)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val mediaStorePath = runCatching {
+                    val resolver = context.contentResolver
+                    val relativePath = "${Environment.DIRECTORY_MUSIC}/$DOWNLOAD_DIR_NAME"
+                    val values = ContentValues().apply {
+                        put(MediaStore.Audio.Media.DISPLAY_NAME, fileName)
+                        put(MediaStore.Audio.Media.TITLE, title.ifBlank { safeTitle })
+                        put(MediaStore.Audio.Media.ARTIST, artist.ifBlank { safeArtist })
+                        put(MediaStore.Audio.Media.MIME_TYPE, resolvedMimeType)
+                        put(MediaStore.Audio.Media.RELATIVE_PATH, relativePath)
+                        put(MediaStore.Audio.Media.IS_MUSIC, 1)
+                        put(MediaStore.Audio.Media.IS_PENDING, 1)
+                    }
+                    val collection = MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                    val itemUri = resolver.insert(collection, values)
+                        ?: throw IllegalStateException("MediaStore insert returned null")
+                    try {
+                        val outputStream = resolver.openOutputStream(itemUri)
+                            ?: throw IllegalStateException("Failed to open MediaStore output stream")
+                        sourceFile.inputStream().use { input ->
+                            outputStream.use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        val publishValues = ContentValues().apply {
+                            put(MediaStore.Audio.Media.IS_PENDING, 0)
+                        }
+                        resolver.update(itemUri, publishValues, null, null)
+                        val queriedPath = resolver.query(
+                            itemUri,
+                            arrayOf(MediaStore.Audio.Media.DATA),
+                            null,
+                            null,
+                            null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) cursor.getString(0) else null
+                        }
+                        queriedPath?.takeIf { it.isNotBlank() } ?: File(downloadDir, fileName).absolutePath
+                    } catch (inner: Exception) {
+                        runCatching { resolver.delete(itemUri, null, null) }
+                        throw inner
+                    }
+                }.getOrNull()
+
+                if (mediaStorePath != null) {
+                    Timber.d("Saved via MediaStore to: $mediaStorePath")
+                    return@withContext mediaStorePath
+                }
+            }
+
             if (!downloadDir.exists()) {
                 downloadDir.mkdirs()
             }
 
-            // Sanitize filename
-            val safeTitle = title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
-            val safeArtist = artist.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
-            val fileName = "$safeArtist - $safeTitle.$extension"
-
             var destFile = File(downloadDir, fileName)
-
-            // Handle duplicate filenames
             var counter = 1
             while (destFile.exists()) {
-                destFile = File(downloadDir, "$safeArtist - $safeTitle ($counter).$extension")
+                destFile = File(downloadDir, "$baseName ($counter).$extension")
                 counter++
             }
 
-            // Copy the file
             sourceFile.copyTo(destFile, overwrite = false)
             Timber.d("Saved to: ${destFile.absolutePath}")
 
@@ -371,6 +433,26 @@ class DeezloadBotService @Inject constructor(
         } catch (e: Exception) {
             Timber.e(e, "Failed to save file to music library")
             null
+        }
+    }
+
+    /**
+     * Deletes the internal TDLib copy after the song has been copied to the public Music folder
+     * so every download does not consume 2x storage.
+     */
+    private suspend fun cleanupTdlibFile(audioFileId: Int, tdlibPath: String) {
+        runCatching {
+            clientManager.sendRequest<TdApi.Ok>(TdApi.DeleteFile(audioFileId))
+        }.onFailure { e ->
+            Timber.d(e, "TDLib DeleteFile fallback to direct file delete for fileId=$audioFileId")
+        }
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val internalFile = File(tdlibPath)
+                if (internalFile.exists()) {
+                    internalFile.delete()
+                }
+            }
         }
     }
 
