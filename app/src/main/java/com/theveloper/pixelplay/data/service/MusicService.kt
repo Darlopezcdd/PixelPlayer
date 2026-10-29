@@ -225,7 +225,11 @@ class MusicService : MediaLibraryService() {
     }
     private var playbackSnapshotPersistJob: Job? = null
     private var playbackSnapshotUnloadWriteJob: Job? = null
+    private var playbackSnapshotRestoreJob: Job? = null
+    @Volatile
     private var isRestoringPlaybackSnapshot = false
+    @Volatile
+    private var pendingExternalPlayRequest = false
     private var isPlaybackUnloadInProgress = false
     private val audioManager by lazy {
         getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -267,7 +271,7 @@ class MusicService : MediaLibraryService() {
         private const val PLAYBACK_SNAPSHOT_DEBOUNCE_MS = 1500L
         private const val MEDIA_SESSION_BUTTON_DEBOUNCE_MS = 250L
         private const val DEFERRED_SERVICE_STARTUP_WORK_DELAY_MS = 1_000L
-        private const val PAUSED_RESTORE_PREPARE_QUEUE_LIMIT = 50
+        private const val PAUSED_RESTORE_PREPARE_QUEUE_LIMIT = 10_000
         private val pendingMediaButtonForegroundStarts = AtomicInteger(0)
 
         private const val APP_PACKAGE_PREFIX = "com.theveloper.pixelplay"
@@ -887,6 +891,83 @@ class MusicService : MediaLibraryService() {
                     )
                 }
             }
+
+            override fun onPlaybackResumption(
+                mediaSession: MediaSession,
+                controller: MediaSession.ControllerInfo
+            ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+                return serviceScope.future {
+                    playbackSnapshotRestoreJob?.join()
+
+                    val existingQueue = withContext(Dispatchers.Main.immediate) {
+                        val player = engine.masterPlayer
+                        if (player.mediaItemCount > 0) {
+                            val items = MutableList(player.mediaItemCount) { idx ->
+                                player.getMediaItemAt(idx)
+                            }
+                            val index = player.currentMediaItemIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))
+                            val pos = player.currentPosition.coerceAtLeast(0L)
+                            MediaSession.MediaItemsWithStartPosition(items, index, pos)
+                        } else {
+                            null
+                        }
+                    }
+                    if (existingQueue != null) {
+                        grantArtworkUriPermissions(controller.packageName, existingQueue.mediaItems)
+                        return@future existingQueue
+                    }
+
+                    val snapshot = runCatching {
+                        userPreferencesRepository.getPlaybackQueueSnapshotOnce()
+                    }.getOrNull()
+
+                    if (snapshot != null && snapshot.items.isNotEmpty()) {
+                        val restoredItems = snapshot.items.mapNotNull(::buildMediaItemFromSnapshot).toMutableList()
+                        if (restoredItems.isNotEmpty()) {
+                            val resolvedIndex = when {
+                                snapshot.currentIndex in restoredItems.indices -> snapshot.currentIndex
+                                !snapshot.currentMediaId.isNullOrBlank() -> {
+                                    restoredItems.indexOfFirst { it.mediaId == snapshot.currentMediaId }
+                                        .takeIf { it >= 0 } ?: 0
+                                }
+                                else -> 0
+                            }
+                            restoredItems.getOrNull(resolvedIndex)?.let { currentItem ->
+                                val resolvedCurrentItem = runCatching { engine.resolveMediaItem(currentItem) }.getOrNull()
+                                if (resolvedCurrentItem != null && resolvedCurrentItem != currentItem) {
+                                    restoredItems[resolvedIndex] = resolvedCurrentItem
+                                }
+                            }
+                            val safeRepeatMode = when (snapshot.repeatMode) {
+                                Player.REPEAT_MODE_OFF,
+                                Player.REPEAT_MODE_ONE,
+                                Player.REPEAT_MODE_ALL -> snapshot.repeatMode
+                                else -> Player.REPEAT_MODE_OFF
+                            }
+                            withContext(Dispatchers.Main.immediate) {
+                                engine.masterPlayer.repeatMode = safeRepeatMode
+                                engine.masterPlayer.shuffleModeEnabled = false
+                                isManualShuffleEnabled = snapshot.shuffleEnabled
+                            }
+                            grantArtworkUriPermissions(controller.packageName, restoredItems)
+                            return@future MediaSession.MediaItemsWithStartPosition(
+                                restoredItems,
+                                resolvedIndex,
+                                snapshot.currentPositionMs.coerceAtLeast(0L)
+                            )
+                        }
+                    }
+
+                    val fallbackSongs = runCatching {
+                        musicRepository.getAudioFiles().first().take(100)
+                    }.getOrDefault(emptyList())
+                    val fallbackItems = fallbackSongs.map { song ->
+                        MediaItemBuilder.buildForExternalController(this@MusicService, song)
+                    }.toMutableList()
+                    grantArtworkUriPermissions(controller.packageName, fallbackItems)
+                    MediaSession.MediaItemsWithStartPosition(fallbackItems, 0, 0L)
+                }
+            }
         }
 
         mediaSession = MediaLibrarySession.Builder(this, engine.masterPlayer, callback)
@@ -906,7 +987,7 @@ class MusicService : MediaLibraryService() {
                 }
             }
         }
-        serviceScope.launch {
+        playbackSnapshotRestoreJob = serviceScope.launch {
             restorePlaybackQueueSnapshotIfNeeded()
             mediaSession?.let { refreshMediaSessionUi(it) }
             widgetUpdateManager.requestFullUpdate(true)
@@ -1065,10 +1146,12 @@ class MusicService : MediaLibraryService() {
     }
 
     private fun Player.hasForegroundPlaybackIntent(): Boolean {
-        return playWhenReady &&
+        val isActiveOrTransientIdle = playWhenReady &&
             mediaItemCount > 0 &&
-            playbackState != Player.STATE_IDLE &&
             playbackState != Player.STATE_ENDED
+        return isActiveOrTransientIdle ||
+            pendingExternalPlayRequest ||
+            playbackSnapshotRestoreJob?.isActive == true
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -1097,24 +1180,72 @@ class MusicService : MediaLibraryService() {
             startTemporaryForegroundForCommand()
         }
 
+        if (isMediaButtonIntent && (mediaSession?.player ?: engine.masterPlayer).mediaItemCount == 0) {
+            pendingExternalPlayRequest = true
+        }
+
         intent?.action?.let { action ->
             Timber.tag(TAG).d("onStartCommand widget action: %s", action)
             val player = mediaSession?.player ?: engine.masterPlayer
             when (action) {
                 PlayerActions.PLAY_PAUSE -> {
-                    if (player.playbackState == Player.STATE_IDLE) {
-                        player.prepare()
+                    val restoreJob = playbackSnapshotRestoreJob
+                    if (player.mediaItemCount == 0 && restoreJob?.isActive == true) {
+                        pendingExternalPlayRequest = true
+                        serviceScope.launch {
+                            restoreJob.join()
+                            val activePlayer = mediaSession?.player ?: engine.masterPlayer
+                            if (activePlayer.mediaItemCount > 0 && !activePlayer.playWhenReady) {
+                                if (activePlayer.playbackState == Player.STATE_IDLE) {
+                                    activePlayer.prepare()
+                                }
+                                activePlayer.playWhenReady = true
+                            }
+                            pendingExternalPlayRequest = false
+                            mediaSession?.let { refreshMediaSessionUi(it) }
+                            widgetUpdateManager.requestFullUpdate(true)
+                        }
+                    } else {
+                        if (player.playbackState == Player.STATE_IDLE) {
+                            player.prepare()
+                        }
+                        player.playWhenReady = !player.playWhenReady
+                        widgetUpdateManager.requestFullUpdate(true)
                     }
-                    player.playWhenReady = !player.playWhenReady
-                    widgetUpdateManager.requestFullUpdate(true)
                 }
                 PlayerActions.NEXT -> {
-                    player.seekToNext()
-                    widgetUpdateManager.requestFullUpdate(true)
+                    val restoreJob = playbackSnapshotRestoreJob
+                    if (player.mediaItemCount == 0 && restoreJob?.isActive == true) {
+                        serviceScope.launch {
+                            restoreJob.join()
+                            val activePlayer = mediaSession?.player ?: engine.masterPlayer
+                            if (activePlayer.playbackState == Player.STATE_IDLE) {
+                                activePlayer.prepare()
+                            }
+                            activePlayer.seekToNext()
+                            widgetUpdateManager.requestFullUpdate(true)
+                        }
+                    } else {
+                        player.seekToNext()
+                        widgetUpdateManager.requestFullUpdate(true)
+                    }
                 }
                 PlayerActions.PREVIOUS -> {
-                    player.seekToPrevious()
-                    widgetUpdateManager.requestFullUpdate(true)
+                    val restoreJob = playbackSnapshotRestoreJob
+                    if (player.mediaItemCount == 0 && restoreJob?.isActive == true) {
+                        serviceScope.launch {
+                            restoreJob.join()
+                            val activePlayer = mediaSession?.player ?: engine.masterPlayer
+                            if (activePlayer.playbackState == Player.STATE_IDLE) {
+                                activePlayer.prepare()
+                            }
+                            activePlayer.seekToPrevious()
+                            widgetUpdateManager.requestFullUpdate(true)
+                        }
+                    } else {
+                        player.seekToPrevious()
+                        widgetUpdateManager.requestFullUpdate(true)
+                    }
                 }
                 PlayerActions.FAVORITE -> {
                     val songId = player.currentMediaItem?.mediaId
@@ -1177,7 +1308,20 @@ class MusicService : MediaLibraryService() {
         }
         val startCommandResult = super.onStartCommand(intent, flags, startId)
         if (needsTemporaryForeground || startedTemporaryForegroundInOnCreate) {
-            if (mediaSession?.player?.hasForegroundPlaybackIntent() != true) {
+            val restoreJob = playbackSnapshotRestoreJob
+            if (restoreJob?.isActive == true || pendingExternalPlayRequest || isMediaButtonIntent) {
+                serviceScope.launch {
+                    restoreJob?.join()
+                    delay(1_500L)
+                    pendingExternalPlayRequest = false
+                    if (mediaSession?.player?.hasForegroundPlaybackIntent() != true) {
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        if (needsTemporaryForeground) {
+                            stopSelfResult(startId)
+                        }
+                    }
+                }
+            } else if (mediaSession?.player?.hasForegroundPlaybackIntent() != true) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 if (needsTemporaryForeground) {
                     stopSelfResult(startId)
@@ -1642,8 +1786,8 @@ class MusicService : MediaLibraryService() {
     }
 
     private suspend fun persistPlaybackSnapshot(playWhenReadyOverride: Boolean? = null) {
-        if (isRestoringPlaybackSnapshot) return
-        val snapshot = capturePlaybackSnapshot(playWhenReadyOverride)
+        if (isRestoringPlaybackSnapshot || playbackSnapshotRestoreJob?.isActive == true) return
+        val snapshot = capturePlaybackSnapshot(playWhenReadyOverride) ?: return
         runCatching {
             userPreferencesRepository.setPlaybackQueueSnapshot(snapshot)
         }.onFailure { e ->
@@ -1732,6 +1876,8 @@ class MusicService : MediaLibraryService() {
         }
         if (alreadyHasQueue) return
 
+        isRestoringPlaybackSnapshot = true
+        try {
         val snapshot = runCatching {
             userPreferencesRepository.getPlaybackQueueSnapshotOnce()
         }.getOrNull() ?: return
@@ -1743,7 +1889,10 @@ class MusicService : MediaLibraryService() {
         val allowBackgroundPlayback = runCatching {
             userPreferencesRepository.keepPlayingInBackgroundFlow.first()
         }.getOrDefault(keepPlayingInBackground)
-        val shouldRestorePlaying = snapshot.playWhenReady && allowBackgroundPlayback
+        val requestedExternalPlay = pendingExternalPlayRequest || withContext(Dispatchers.Main.immediate) {
+            engine.masterPlayer.playWhenReady
+        }
+        val shouldRestorePlaying = (snapshot.playWhenReady && allowBackgroundPlayback) || requestedExternalPlay
 
         val restoredItems = snapshot.items.mapNotNull(::buildMediaItemFromSnapshot)
         if (restoredItems.isEmpty()) {
@@ -1781,26 +1930,22 @@ class MusicService : MediaLibraryService() {
                 else -> Player.REPEAT_MODE_OFF
             }
 
-            isRestoringPlaybackSnapshot = true
-            try {
-                player.setMediaItems(
-                    preparedItems,
-                    resolvedIndex,
-                    snapshot.currentPositionMs.coerceAtLeast(0L)
-                )
-                if (shouldRestorePlaying || preparedItems.size <= PAUSED_RESTORE_PREPARE_QUEUE_LIMIT) {
-                    player.prepare()
-                }
-                player.repeatMode = safeRepeatMode
-                player.shuffleModeEnabled = false
-                isManualShuffleEnabled = snapshot.shuffleEnabled
-                if (shouldRestorePlaying) {
-                    player.playWhenReady = true
-                } else {
-                    player.playWhenReady = false
-                }
-            } finally {
-                isRestoringPlaybackSnapshot = false
+            player.setMediaItems(
+                preparedItems,
+                resolvedIndex,
+                snapshot.currentPositionMs.coerceAtLeast(0L)
+            )
+            if (shouldRestorePlaying || preparedItems.size <= PAUSED_RESTORE_PREPARE_QUEUE_LIMIT) {
+                player.prepare()
+            }
+            player.repeatMode = safeRepeatMode
+            player.shuffleModeEnabled = false
+            isManualShuffleEnabled = snapshot.shuffleEnabled
+            if (shouldRestorePlaying) {
+                pendingExternalPlayRequest = false
+                player.playWhenReady = true
+            } else {
+                player.playWhenReady = false
             }
         }
 
@@ -1810,6 +1955,9 @@ class MusicService : MediaLibraryService() {
             snapshot.currentIndex,
             shouldRestorePlaying
         )
+        } finally {
+            isRestoringPlaybackSnapshot = false
+        }
         schedulePlaybackSnapshotPersist(immediate = true)
     }
 
@@ -2529,7 +2677,7 @@ class MusicService : MediaLibraryService() {
     }
 
     private fun persistPlaybackSnapshotOnUnload() {
-        val snapshot = capturePlaybackSnapshotFromPlayer(playWhenReadyOverride = false)
+        val snapshot = capturePlaybackSnapshotFromPlayer(playWhenReadyOverride = false) ?: return
         writePlaybackSnapshotOnUnload(snapshot)
     }
 
