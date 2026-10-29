@@ -160,4 +160,33 @@ class DebugPerformanceReportTest {
         assertThat(DebugPerformanceReport.pcmEncodingLabel(4)).isEqualTo("32-bit float")
         assertThat(DebugPerformanceReport.pcmEncodingLabel(999)).contains("999")
     }
+
+    @Test
+    fun advancedDiagnosticsTimeline_roundTripsAndRendersWhenPresent() {
+        val report = sampleReport().copy(
+            advancedDiagnostics = AdvancedDiagnosticsSection(
+                enabled = true,
+                sessionStartedIso = "2026-06-03T11:00:00Z",
+                expiresAtIso = "2026-06-04T11:00:00Z",
+                eventCount = 1,
+                droppedEventCount = 0,
+                events = listOf(
+                    AdvancedDiagnosticEventEntry(
+                        elapsedRealtimeMs = 123_456L,
+                        type = AdvancedPerformanceDiagnostics.EventTypes.USER_MARK,
+                        name = "lag_mark",
+                        details = mapOf("note" to "Player UI stuttered")
+                    )
+                )
+            )
+        )
+
+        val decoded = Json.decodeFromString(DebugPerformanceReport.serializer(), report.toJson())
+        val text = report.toPlainText()
+
+        assertThat(decoded).isEqualTo(report)
+        assertThat(text).contains("== ADVANCED DIAGNOSTICS ==")
+        assertThat(text).contains("lag_mark")
+        assertThat(text).contains("Player UI stuttered")
+    }
 }

@@ -18,6 +18,8 @@ import androidx.media3.common.util.UnstableApi
 import com.theveloper.pixelplay.data.database.DeviceCapabilitySongRow
 import com.theveloper.pixelplay.data.database.MusicDao
 import com.theveloper.pixelplay.data.database.SourceType
+import com.theveloper.pixelplay.data.diagnostics.AdvancedPerformanceDiagnostics
+import com.theveloper.pixelplay.data.preferences.UserPreferencesRepository
 import com.theveloper.pixelplay.data.service.player.ActiveDecoderInfo
 import com.theveloper.pixelplay.data.service.player.DualPlayerEngine
 import com.theveloper.pixelplay.data.service.player.HiFiCapabilityChecker
@@ -29,6 +31,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -136,6 +139,8 @@ data class DeviceCapabilitiesState(
     val decoderInfo: ActiveDecoderInfo? = null,
     val isLoading: Boolean = true,
     val isGeneratingReport: Boolean = false,
+    val advancedDiagnosticsEnabled: Boolean = false,
+    val advancedDiagnosticsExpiresAtEpochMs: Long? = null,
     val performanceReport: String? = null
 )
 
@@ -149,6 +154,7 @@ private data class AudioFormatCandidate(
 class DeviceCapabilitiesViewModel @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val engine: DualPlayerEngine,
+    private val userPreferencesRepository: UserPreferencesRepository,
     private val musicDao: MusicDao,
     private val reportCollector: com.theveloper.pixelplay.data.diagnostics.DebugPerformanceReportCollector
 ) : ViewModel() {
@@ -157,6 +163,7 @@ class DeviceCapabilitiesViewModel @Inject constructor(
     val state = _state.asStateFlow()
 
     init {
+        observeAdvancedDiagnostics()
         loadCapabilities()
     }
 
@@ -186,6 +193,32 @@ class DeviceCapabilitiesViewModel @Inject constructor(
         }
     }
 
+    fun setAdvancedPerformanceDiagnosticsEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setAdvancedPerformanceDiagnosticsEnabled(enabled)
+        }
+    }
+
+    fun markLagNow() {
+        AdvancedPerformanceDiagnostics.markLagNow(note = "Marked from Device capabilities screen")
+    }
+
+    private fun observeAdvancedDiagnostics() {
+        viewModelScope.launch {
+            userPreferencesRepository.disableExpiredAdvancedPerformanceDiagnostics()
+            userPreferencesRepository.advancedPerformanceDiagnosticsSettingsFlow.collect { settings ->
+                val active = settings.isActive()
+                if (!active && settings.enabled) {
+                    userPreferencesRepository.disableExpiredAdvancedPerformanceDiagnostics()
+                }
+                _state.value = _state.value.copy(
+                    advancedDiagnosticsEnabled = active,
+                    advancedDiagnosticsExpiresAtEpochMs = settings.expiresAtEpochMs.takeIf { active }
+                )
+            }
+        }
+    }
+
     private fun loadCapabilities() {
         viewModelScope.launch {
             val exoInfo = getExoPlayerInfo()
@@ -199,6 +232,7 @@ class DeviceCapabilitiesViewModel @Inject constructor(
                 val memorySummary = getMemorySummary()
                 val decoderInfo = engine.activeDecoderInfo.value
 
+                val current = _state.value
                 DeviceCapabilitiesState(
                     deviceInfo = deviceInfo,
                     audioCapabilities = audioCaps,
@@ -208,6 +242,9 @@ class DeviceCapabilitiesViewModel @Inject constructor(
                     formatSupport = formatSupport,
                     memorySummary = memorySummary,
                     decoderInfo = decoderInfo,
+                    advancedDiagnosticsEnabled = current.advancedDiagnosticsEnabled,
+                    advancedDiagnosticsExpiresAtEpochMs = current.advancedDiagnosticsExpiresAtEpochMs,
+                    performanceReport = current.performanceReport,
                     isLoading = false
                 )
             }

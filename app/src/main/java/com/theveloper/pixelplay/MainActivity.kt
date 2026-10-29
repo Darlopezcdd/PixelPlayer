@@ -25,6 +25,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.annotation.CallSuper
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -137,6 +138,7 @@ import com.theveloper.pixelplay.presentation.screens.SetupScreen
 import com.theveloper.pixelplay.presentation.viewmodel.MainViewModel
 import com.theveloper.pixelplay.presentation.viewmodel.PlayerViewModel
 import com.theveloper.pixelplay.ui.theme.PixelPlayTheme
+import com.theveloper.pixelplay.ui.theme.LocalShowScrollbar
 import com.theveloper.pixelplay.utils.CrashHandler
 import com.theveloper.pixelplay.utils.AppLocaleManager
 import com.theveloper.pixelplay.utils.LogUtils
@@ -160,6 +162,7 @@ import kotlinx.coroutines.flow.map
 @Immutable
 data class BottomNavItem(
     val label: String,
+    @StringRes val labelResId: Int,
     @DrawableRes val iconResId: Int,
     @DrawableRes val selectedIconResId: Int? = null,
     val screen: Screen
@@ -238,6 +241,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val systemDarkTheme = isSystemInDarkTheme()
             val appThemeMode by themePreferencesRepository.appThemeModeFlow.collectAsStateWithLifecycle(initialValue = AppThemeMode.FOLLOW_SYSTEM)
+            val showScrollbar by userPreferencesRepository.showScrollbarFlow.collectAsStateWithLifecycle(initialValue = true)
             val useDarkTheme = when (appThemeMode) {
                 AppThemeMode.DARK -> true
                 AppThemeMode.LIGHT -> false
@@ -283,63 +287,65 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            PixelPlayTheme(
-                darkTheme = useDarkTheme
-            ) {
-                var contentVisible by remember { mutableStateOf(false) }
-                val contentAlpha by animateFloatAsState(
-                    targetValue = if (contentVisible) 1f else 0f,
-                    animationSpec = tween(600, easing = LinearOutSlowInEasing),
-                    label = "AppContentAlpha"
-                )
-
-                LaunchedEffect(Unit) {
-                    // Delay slightly to ensure first frame layout is done behind Splash
-                    delay(100)
-                    contentVisible = true
-                }
-
-                Surface(
-                    modifier = Modifier.fillMaxSize().graphicsLayer { alpha = contentAlpha }, 
-                    color = MaterialTheme.colorScheme.background
+            CompositionLocalProvider(LocalShowScrollbar provides showScrollbar) {
+                PixelPlayTheme(
+                    darkTheme = useDarkTheme
                 ) {
-                    if (showSetupScreen == null) {
-                        SetupGateLoadingScreen()
-                    } else {
-                        AnimatedContent(
-                            targetState = showSetupScreen,
-                            transitionSpec = {
-                                if (targetState) {
-                                    // Transition to Setup
-                                    fadeIn(animationSpec = tween(400)) togetherWith fadeOut(animationSpec = tween(400))
-                                } else {
-                                    // Transition from Setup to Main App
-                                    scaleIn(initialScale = 0.95f, animationSpec = tween(450)) + fadeIn(animationSpec = tween(450)) togetherWith
-                                            slideOutHorizontally(targetOffsetX = { -it }, animationSpec = tween(450)) + fadeOut(animationSpec = tween(450))
-                                }
-                            },
-                            label = "SetupTransition"
-                        ) { shouldShowSetup ->
-                            if (shouldShowSetup) {
-                                SetupScreen(onSetupComplete = {
-                                    // Repository-backed setup completion updates the gate automatically.
-                                })
-                            } else {
-                                MainAppContent(playerViewModel, mainViewModel)
-                            }
-                        }
+                    var contentVisible by remember { mutableStateOf(false) }
+                    val contentAlpha by animateFloatAsState(
+                        targetValue = if (contentVisible) 1f else 0f,
+                        animationSpec = tween(600, easing = LinearOutSlowInEasing),
+                        label = "AppContentAlpha"
+                    )
+
+                    LaunchedEffect(Unit) {
+                        // Delay slightly to ensure first frame layout is done behind Splash
+                        delay(100)
+                        contentVisible = true
                     }
 
-                    // Show crash report dialog if needed
-                    if (showCrashReportDialog && crashLogData != null) {
-                        CrashReportDialog(
-                            crashLog = crashLogData!!,
-                            onDismiss = {
-                                CrashHandler.clearCrashLog()
-                                crashLogData = null
-                                showCrashReportDialog = false
+                    Surface(
+                        modifier = Modifier.fillMaxSize().graphicsLayer { alpha = contentAlpha }, 
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        if (showSetupScreen == null) {
+                            SetupGateLoadingScreen()
+                        } else {
+                            AnimatedContent(
+                                targetState = showSetupScreen,
+                                transitionSpec = {
+                                    if (targetState) {
+                                        // Transition to Setup
+                                        fadeIn(animationSpec = tween(400)) togetherWith fadeOut(animationSpec = tween(400))
+                                    } else {
+                                        // Transition from Setup to Main App
+                                        scaleIn(initialScale = 0.95f, animationSpec = tween(450)) + fadeIn(animationSpec = tween(450)) togetherWith
+                                                slideOutHorizontally(targetOffsetX = { -it }, animationSpec = tween(450)) + fadeOut(animationSpec = tween(450))
+                                    }
+                                },
+                                label = "SetupTransition"
+                            ) { shouldShowSetup ->
+                                if (shouldShowSetup) {
+                                    SetupScreen(onSetupComplete = {
+                                        // Repository-backed setup completion updates the gate automatically.
+                                    })
+                                } else {
+                                    MainAppContent(playerViewModel, mainViewModel)
+                                }
                             }
-                        )
+                        }
+
+                        // Show crash report dialog if needed
+                        if (showCrashReportDialog && crashLogData != null) {
+                            CrashReportDialog(
+                                crashLog = crashLogData!!,
+                                onDismiss = {
+                                    CrashHandler.clearCrashLog()
+                                    crashLogData = null
+                                    showCrashReportDialog = false
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -601,9 +607,9 @@ class MainActivity : ComponentActivity() {
 
         val commonNavItems = remember {
             persistentListOf(
-                BottomNavItem("Home", R.drawable.rounded_home_24, R.drawable.home_24_rounded_filled, Screen.Home),
-                BottomNavItem("Search", R.drawable.rounded_search_24, R.drawable.rounded_search_24, Screen.Search),
-                BottomNavItem("Library", R.drawable.rounded_library_music_24, R.drawable.round_library_music_24, Screen.Library)
+                BottomNavItem("Home", R.string.nav_bar_home, R.drawable.rounded_home_24, R.drawable.home_24_rounded_filled, Screen.Home),
+                BottomNavItem("Search", R.string.nav_bar_search, R.drawable.rounded_search_24, R.drawable.rounded_search_24, Screen.Search),
+                BottomNavItem("Library", R.string.nav_bar_library, R.drawable.rounded_library_music_24, R.drawable.round_library_music_24, Screen.Library)
             )
         }
         val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -623,6 +629,7 @@ class MainActivity : ComponentActivity() {
                 Screen.DJSpace.route,
                 Screen.NavBarCrRad.route,
                 Screen.About.route,
+                Screen.OpenSourceLicenses.route,
                 Screen.Stats.route,
                 Screen.EditTransition.route,
                 Screen.Experimental.route,
@@ -661,6 +668,8 @@ class MainActivity : ComponentActivity() {
         val useSmoothCorners by playerViewModel.useSmoothCorners.collectAsStateWithLifecycle()
         val isMiniPlayerDismissing by playerViewModel.isMiniPlayerDismissing.collectAsStateWithLifecycle()
         val hapticsEnabled by playerViewModel.hapticsEnabled.collectAsStateWithLifecycle()
+        val disableBlurAllOver by playerViewModel.disableBlurAllOver.collectAsStateWithLifecycle()
+        val predictiveBackCollapseFraction by playerViewModel.predictiveBackCollapseFraction.collectAsStateWithLifecycle()
         val rootView = LocalView.current
         val platformHapticFeedback = LocalHapticFeedback.current
         val appHapticsConfig = remember(hapticsEnabled) {
@@ -844,9 +853,10 @@ class MainActivity : ComponentActivity() {
                                         // animating the radius re-clips this layer only — no
                                         // recomposition and no layout pass for the bar.
                                         val fraction = playerViewModel.playerContentExpansionFraction.value
+                                        val safeFraction = fraction.coerceIn(0f, 1f)
                                         val topDp = when {
                                             navBarStyle == NavBarStyle.DEFAULT -> animatedDefaultTopCornerRadius.value
-                                            navBarStyle == NavBarStyle.FULL_WIDTH -> lerp(navBarCornerRadius.dp, 26.dp, fraction)
+                                            navBarStyle == NavBarStyle.FULL_WIDTH -> lerp(navBarCornerRadius.dp, 26.dp, safeFraction)
                                             showPlayerContentArea -> if (fraction < 0.2f) {
                                                 lerp(navBarCornerRadius.dp, 26.dp, (fraction / 0.2f).coerceIn(0f, 1f))
                                             } else {
@@ -920,12 +930,17 @@ class MainActivity : ComponentActivity() {
                                 .fillMaxSize()
                                 .graphicsLayer {
                                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                        val fraction = expansionFractionProvider()
-                                        // Quantize to 4px steps: rebuild the RenderEffect only
-                                        // when the blur crosses a step, reuse the cached object
-                                        // every other frame.
-                                        val quantizedBlurPx = (fraction * 100f / 4f).roundToInt() * 4f
-                                        renderEffect = blurEffectCache.get(quantizedBlurPx)
+                                        if (disableBlurAllOver) {
+                                            renderEffect = null
+                                        } else {
+                                            val expansion = expansionFractionProvider()
+                                            val fraction = (expansion * (1f - predictiveBackCollapseFraction)).coerceIn(0f, 1f)
+                                            // Quantize to 2px steps: rebuild the RenderEffect only
+                                            // when the blur crosses a step, reuse the cached object
+                                            // every other frame.
+                                            val quantizedBlurPx = (fraction * 120f / 2f).roundToInt() * 2f
+                                            renderEffect = blurEffectCache.get(quantizedBlurPx)
+                                        }
                                     }
                                 }
                         ) {

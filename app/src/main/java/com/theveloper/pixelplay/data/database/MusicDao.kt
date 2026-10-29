@@ -393,6 +393,15 @@ interface MusicDao {
     @Query("SELECT DISTINCT parent_directory_path FROM songs")
     suspend fun getDistinctParentDirectories(): List<String>
 
+    /**
+     * Reactive variant of [getDistinctParentDirectories]. Re-emits whenever the songs
+     * table changes (e.g. after a sync adds songs in new folders), so cached directory
+     * filters stay consistent with the actual library instead of freezing at an early,
+     * possibly-empty snapshot taken before the first sync completes.
+     */
+    @Query("SELECT DISTINCT parent_directory_path FROM songs")
+    fun getDistinctParentDirectoriesFlow(): Flow<List<String>>
+
     // --- Song Queries ---
     // Updated getSongs to include Telegram songs (negative IDs) regardless of directory filter
     @Query("SELECT " + SONG_LIST_PROJECTION + """
@@ -658,7 +667,7 @@ interface MusicDao {
 
     @Query("""
         SELECT id FROM songs
-        WHERE (:applyDirectoryFilter = 0 OR parent_directory_path IN (:allowedParentDirs))
+        WHERE (:applyDirectoryFilter = 0 OR id < 0 OR parent_directory_path IN (:allowedParentDirs))
         AND (
             :filterMode = 0
             OR (
@@ -695,7 +704,7 @@ interface MusicDao {
     @Query("""
         SELECT songs.id FROM songs
         INNER JOIN favorites ON songs.id = favorites.songId AND favorites.isFavorite = 1
-        WHERE (:applyDirectoryFilter = 0 OR songs.parent_directory_path IN (:allowedParentDirs))
+        WHERE (:applyDirectoryFilter = 0 OR songs.id < 0 OR songs.parent_directory_path IN (:allowedParentDirs))
         AND (
             :filterMode = 0
             OR (
@@ -1543,6 +1552,35 @@ interface MusicDao {
         applyDirectoryFilter: Boolean
     ): Flow<List<SongEntity>>
 
+    // Multi-genre aware query: matches songs where the genre column equals the name (case-
+    // insensitively, via LIKE), or contains it as part of a comma-separated list.
+    // SQLite LIKE is case-insensitive for ASCII letters by default, which is sufficient
+    // for genre names. All six arms use LIKE so that "rock" matches "Rock", "Rock,Pop",
+    // "Rock, Pop", "Pop,Rock", "Pop, Rock", and "Pop,Rock,Jazz".
+    @Query("""
+        SELECT * FROM songs
+        WHERE (:applyDirectoryFilter = 0 OR id < 0 OR parent_directory_path IN (:allowedParentDirs))
+        AND (
+            genre LIKE :genreName
+            OR genre LIKE :genrePrefix
+            OR genre LIKE :genreSuffixWithSpace
+            OR genre LIKE :genreSuffix
+            OR genre LIKE :genreMiddleWithSpace
+            OR genre LIKE :genreMiddle
+        )
+        ORDER BY title ASC
+    """)
+    fun getSongsByGenreContaining(
+        genreName: String,
+        genrePrefix: String,
+        genreSuffixWithSpace: String,
+        genreSuffix: String,
+        genreMiddleWithSpace: String,
+        genreMiddle: String,
+        allowedParentDirs: List<String>,
+        applyDirectoryFilter: Boolean
+    ): Flow<List<SongEntity>>
+
     @Query("""
         SELECT * FROM songs
         WHERE (:applyDirectoryFilter = 0 OR id < 0 OR parent_directory_path IN (:allowedParentDirs))
@@ -1615,6 +1653,7 @@ interface MusicDao {
             artist_id = :artistId,
             artists_json = :artistsJson,
             album_name = :album,
+            album_artist = :albumArtist,
             genre = :genre,
             track_number = :trackNumber,
             disc_number = :discNumber
@@ -1627,6 +1666,7 @@ interface MusicDao {
         artistId: Long,
         artistsJson: String?,
         album: String,
+        albumArtist: String?,
         genre: String?,
         trackNumber: Int,
         discNumber: Int?
@@ -1640,6 +1680,7 @@ interface MusicDao {
         artistId: Long,
         artistsJson: String?,
         album: String,
+        albumArtist: String?,
         genre: String?,
         trackNumber: Int,
         discNumber: Int?,
@@ -1657,6 +1698,7 @@ interface MusicDao {
             artistId = artistId,
             artistsJson = artistsJson,
             album = album,
+            albumArtist = albumArtist,
             genre = genre,
             trackNumber = trackNumber,
             discNumber = discNumber

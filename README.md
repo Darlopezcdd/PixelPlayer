@@ -1,9 +1,11 @@
 # Pixel Player with downloader 🎵
 
 <p align="center">
-  <img src="assets/icon.png" alt="App Icon" width="128"/>
+  <img src="assets/PixelPlayer.svg" alt="App Icon" height="250"/>
 </p>
-
+<p align="center">
+<a href="https://trendshift.io/repositories/15551" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15551" alt="PixelPlayerHQ%2FPixelPlayer | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</p>
 <p align="center">
   <strong>A beautiful, feature-rich music player for Android, now with Telegram Downloader!</strong><br>
   Built with Jetpack Compose and Material Design 3
@@ -204,8 +206,14 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 This project is licensed under a Proprietary License - see the [LICENSE](LICENSE) file for details.
 
+Portions contributed before 2026-05-12 remain available under the MIT License; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ---
 
 <p align="center">
   Made with ❤️ by <a href="https://github.com/theovilardo">theovilardo</a>
 </p>
+<p align="center">
+  Logo designed by <a href="https://github.com/NPSummers">Aureal</a>.
+</p>
+

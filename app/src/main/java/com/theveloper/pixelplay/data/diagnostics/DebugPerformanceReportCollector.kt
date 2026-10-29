@@ -114,6 +114,7 @@ class DebugPerformanceReportCollector @Inject constructor(
                 offloadEvents = metrics.offloadEvents.map {
                     OffloadEventEntry(it.elapsedRealtimeMs, it.reason)
                 },
+                advancedDiagnostics = collectAdvancedDiagnostics(),
                 notes = buildNotes()
             )
         }
@@ -234,21 +235,43 @@ class DebugPerformanceReportCollector @Inject constructor(
             }
         )
 
+    private fun collectAdvancedDiagnostics(): AdvancedDiagnosticsSection {
+        val snapshot = AdvancedPerformanceDiagnostics.snapshot()
+        return AdvancedDiagnosticsSection(
+            enabled = snapshot.enabled,
+            sessionStartedIso = snapshot.sessionStartedEpochMs?.let(::isoFromEpochMs),
+            expiresAtIso = snapshot.expiresAtEpochMs?.let(::isoFromEpochMs),
+            eventCount = snapshot.events.size,
+            droppedEventCount = snapshot.droppedEventCount,
+            events = snapshot.events.map { event ->
+                AdvancedDiagnosticEventEntry(
+                    elapsedRealtimeMs = event.elapsedRealtimeMs,
+                    type = event.type,
+                    name = event.name,
+                    details = event.details
+                )
+            }
+        )
+    }
+
     private fun buildNotes(): List<String> = listOf(
         "Hi-res = sample rate > 48 kHz; ultra-hi-res = sample rate >= 176.4 kHz.",
         "File sizes are estimated from bitrate × duration (raw sizes are not stored).",
         "Channel count, bit depth, multichannel and embedded-artwork figures are observed " +
             "while the app works (scan / playback); they reflect this session, not an exhaustive library probe.",
         "Timings are in milliseconds and only appear once at least one sample was collected.",
+        "Advanced diagnostics are opt-in and only appear when enabled before reproducing lag.",
         "This report contains no file paths, titles, or artists and is safe to share."
     )
 
     private fun PerformanceMetrics.TimingSnapshot.toReportTiming() =
         ReportTiming(count = count, minMs = minMs, avgMs = avgMs, maxMs = maxMs, lastMs = lastMs)
 
-    private fun isoNow(): String {
+    private fun isoNow(): String = isoFromEpochMs(System.currentTimeMillis())
+
+    private fun isoFromEpochMs(epochMs: Long): String {
         val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
         format.timeZone = TimeZone.getTimeZone("UTC")
-        return format.format(Date())
+        return format.format(Date(epochMs))
     }
 }

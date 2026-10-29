@@ -191,7 +191,6 @@ class PlayerViewModelTest {
         every { mockAiStateHolder.showAiPlaylistSheet } returns MutableStateFlow(false)
         every { mockAiStateHolder.isGeneratingAiPlaylist } returns MutableStateFlow(false)
         every { mockAiStateHolder.aiError } returns MutableStateFlow<String?>(null)
-        every { mockAiStateHolder.isGeneratingMetadata } returns MutableStateFlow(false)
         every { mockAiStateHolder.initialize(any(), any(), any(), any(), any(), any()) } just runs
  
         every { mockCastStateHolder.castSession } returns _castSessionFlow
@@ -259,6 +258,41 @@ class PlayerViewModelTest {
         // Ensure manual executor for main thread to prevent RejectedExecutionException
         // We already mocked ContextCompat.getMainExecutor above.
         
+        // Real dispatch holder wired to the same mocks the ViewModel uses, so the
+        // existing end-to-end playback tests keep exercising the moved logic.
+        val playbackDispatchStateHolder = PlaybackDispatchStateHolder(
+            mockMusicRepository,
+            mockUserPreferencesRepository,
+            mockDualPlayerEngine,
+            mockAppShortcutManager,
+            mockSyncManager,
+            mockExternalMediaStateHolder,
+            mockPlaybackStateHolder,
+            mockQueueStateHolder,
+            mockLibraryStateHolder,
+            mockCastStateHolder,
+            mockCastTransferStateHolder,
+            mockConnectivityStateHolder,
+            mockThemeStateHolder,
+            mockContext
+        )
+        // Real controller-sync holder wired to the same mocks, so existing tests
+        // (e.g. the repeat-mode restore test) keep exercising the moved logic.
+        val mediaControllerSyncStateHolder = MediaControllerSyncStateHolder(
+            mockMusicRepository,
+            mockUserPreferencesRepository,
+            mockDualPlayerEngine,
+            mockMediaMapper,
+            mockPlaybackStateHolder,
+            mockLibraryStateHolder,
+            mockCastStateHolder,
+            mockConnectivityStateHolder,
+            mockThemeStateHolder,
+            mockLyricsStateHolder,
+            mockSleepTimerStateHolder,
+            playbackDispatchStateHolder,
+            mockContext
+        )
         playerViewModel = PlayerViewModel(
             mockContext,
             mockMusicRepository,
@@ -267,7 +301,6 @@ class PlayerViewModelTest {
             mockThemePreferencesRepository,
             mockSyncManager,
             mockDualPlayerEngine,
-            mockAppShortcutManager,
             mockTelegramCacheManagerProvider,
             mockListeningStatsTracker,
             mockDailyMixStateHolder,
@@ -288,10 +321,11 @@ class PlayerViewModelTest {
             mockCastTransferStateHolder,
             mockMetadataEditStateHolder,
             mockSongRemovalStateHolder,
-            mockExternalMediaStateHolder,
             mockThemeStateHolder,
             mockMultiSelectionStateHolder,
             mockPlaylistSelectionStateHolder,
+            playbackDispatchStateHolder,
+            mediaControllerSyncStateHolder,
             sessionToken,
             mockMediaControllerFactory
         )

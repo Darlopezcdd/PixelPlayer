@@ -119,7 +119,6 @@ object MediaItemBuilder {
                 .setMediaMetadata(
                     buildMediaMetadataForSong(
                         song = song,
-                        context = context,
                         exposedArtworkUri = externalControllerArtworkUri(context, song.albumArtUriString)
                     )
                 )
@@ -272,7 +271,6 @@ object MediaItemBuilder {
     @OptIn(UnstableApi::class)
     private fun buildMediaMetadataForSong(
         song: Song,
-        context: Context? = null,
         exposedArtworkUri: Uri? = artworkUri(song.albumArtUriString)
     ): MediaMetadata {
         val metadataBuilder = MediaMetadata.Builder()

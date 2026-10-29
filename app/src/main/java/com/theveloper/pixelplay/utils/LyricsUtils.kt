@@ -1111,17 +1111,20 @@ private fun stripLeadingLyricsDocumentNoise(value: String): String {
 }
 
 private fun looksLikeTtmlDocument(value: String): Boolean {
-    if (value.startsWith("<tt", ignoreCase = true)) {
-        return true
-    }
-    if (!value.startsWith("<?xml", ignoreCase = true)) {
-        return false
-    }
+    // Match bare <tt>, namespaced <tt:tt>, and SMIL wrappers (<smil>) used
+    // by some Apple Music and broadcast TTML variants.
+    fun String.startsWithTtmlRoot(): Boolean =
+        startsWith("<tt", ignoreCase = true) ||
+            startsWith("<smil", ignoreCase = true)
 
-    val afterDeclaration = value.substringAfter("?>", missingDelimiterValue = "")
-    return afterDeclaration
+    if (value.startsWithTtmlRoot()) return true
+
+    if (!value.startsWith("<?xml", ignoreCase = true)) return false
+
+    return value
+        .substringAfter("?>", missingDelimiterValue = "")
         .trimStart()
-        .startsWith("<tt", ignoreCase = true)
+        .startsWithTtmlRoot()
 }
 
 private fun sanitizeLrcLine(rawLine: String): String {

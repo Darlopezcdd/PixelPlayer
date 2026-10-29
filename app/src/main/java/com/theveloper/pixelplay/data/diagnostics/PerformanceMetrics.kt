@@ -129,6 +129,15 @@ object PerformanceMetrics {
     private val maxes = ConcurrentHashMap<String, AtomicLong>()
     private val offloadEvents = ArrayDeque<OffloadEvent>(MAX_OFFLOAD_EVENTS)
     private val controllers = ConcurrentHashMap<String, ControllerInfo>()
+    private val advancedTimelineTimingNames = setOf(
+        Timings.FULL_SCAN,
+        Timings.ARTWORK_EXTRACT,
+        Timings.ARTWORK_DECODE,
+        Timings.PLAYBACK_PREPARE,
+        Timings.AUDIO_DECODER_INIT,
+        Timings.TRANSITION,
+        Timings.MEDIASESSION_ITEM_BUILD
+    )
 
     @Volatile
     var widgetActive: Boolean = false
@@ -139,6 +148,20 @@ object PerformanceMetrics {
     fun recordTiming(name: String, durationMs: Long) {
         if (durationMs < 0) return
         timings.computeIfAbsent(name) { TimingStat() }.record(durationMs.toDouble())
+        if (AdvancedPerformanceDiagnostics.isEnabled && name in advancedTimelineTimingNames) {
+            AdvancedPerformanceDiagnostics.recordEvent(
+                type = when (name) {
+                    Timings.ARTWORK_EXTRACT, Timings.ARTWORK_DECODE ->
+                        AdvancedPerformanceDiagnostics.EventTypes.ARTWORK
+                    Timings.FULL_SCAN ->
+                        AdvancedPerformanceDiagnostics.EventTypes.WORKER
+                    else ->
+                        AdvancedPerformanceDiagnostics.EventTypes.PLAYBACK
+                },
+                name = "timing_$name",
+                details = mapOf("durationMs" to durationMs.toString())
+            )
+        }
     }
 
     /** Times [block], records the elapsed wall time under [name], and returns its result. */
@@ -192,6 +215,13 @@ object PerformanceMetrics {
 
     fun recordOffloadFallback(reason: String, elapsedRealtimeMs: Long) {
         increment(Counters.OFFLOAD_FALLBACKS)
+        AdvancedPerformanceDiagnostics.recordEventIfEnabled(
+            type = AdvancedPerformanceDiagnostics.EventTypes.OFFLOAD,
+            name = "offload_fallback",
+            elapsedRealtimeMs = elapsedRealtimeMs
+        ) {
+            mapOf("reason" to reason)
+        }
         synchronized(offloadEvents) {
             if (offloadEvents.size >= MAX_OFFLOAD_EVENTS) offloadEvents.pollFirst()
             offloadEvents.addLast(OffloadEvent(elapsedRealtimeMs, reason))

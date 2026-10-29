@@ -31,6 +31,7 @@ data class DebugPerformanceReport(
     val controllers: ControllerSection,
     val timings: Map<String, ReportTiming>,
     val offloadEvents: List<OffloadEventEntry>,
+    val advancedDiagnostics: AdvancedDiagnosticsSection = AdvancedDiagnosticsSection(),
     val notes: List<String>
 ) {
     fun toJson(): String = PRETTY_JSON.encodeToString(this)
@@ -134,6 +135,24 @@ data class DebugPerformanceReport(
             offloadEvents.forEach { appendLine("  [+${it.elapsedRealtimeMs} ms] ${it.reason}") }
         }
 
+        if (advancedDiagnostics.enabled || advancedDiagnostics.events.isNotEmpty()) {
+            section("ADVANCED DIAGNOSTICS")
+            kv("Enabled", advancedDiagnostics.enabled.toString())
+            kv("Started", advancedDiagnostics.sessionStartedIso ?: NOT_OBSERVED)
+            kv("Expires", advancedDiagnostics.expiresAtIso ?: NOT_OBSERVED)
+            kv("Events retained", advancedDiagnostics.eventCount.toString())
+            kv("Events dropped", advancedDiagnostics.droppedEventCount.toString())
+            advancedDiagnostics.events.forEach { event ->
+                val details = event.details.entries.joinToString(", ") { (key, value) -> "$key=$value" }
+                appendLine(
+                    buildString {
+                        append("  [+${event.elapsedRealtimeMs} ms] ${event.type}/${event.name}")
+                        if (details.isNotBlank()) append(" ($details)")
+                    }
+                )
+            }
+        }
+
         if (notes.isNotEmpty()) {
             section("NOTES")
             notes.forEach { appendLine("  - $it") }
@@ -150,7 +169,7 @@ data class DebugPerformanceReport(
     }
 
     companion object {
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
         private const val UNKNOWN = "unknown"
         private const val NOT_OBSERVED = "not observed"
         private const val NOT_PLAYING = "not playing"
@@ -312,4 +331,22 @@ data class ReportTiming(
 data class OffloadEventEntry(
     val elapsedRealtimeMs: Long,
     val reason: String
+)
+
+@Serializable
+data class AdvancedDiagnosticsSection(
+    val enabled: Boolean = false,
+    val sessionStartedIso: String? = null,
+    val expiresAtIso: String? = null,
+    val eventCount: Int = 0,
+    val droppedEventCount: Long = 0,
+    val events: List<AdvancedDiagnosticEventEntry> = emptyList()
+)
+
+@Serializable
+data class AdvancedDiagnosticEventEntry(
+    val elapsedRealtimeMs: Long,
+    val type: String,
+    val name: String,
+    val details: Map<String, String> = emptyMap()
 )

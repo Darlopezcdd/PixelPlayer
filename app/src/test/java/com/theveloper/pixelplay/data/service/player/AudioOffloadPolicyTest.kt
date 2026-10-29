@@ -114,7 +114,8 @@ class AudioOffloadPolicyTest {
             lastPlayingAtMs = 1_000L,
             timeSincePlayingMs = 120L,
             isPostSeekBuffering = false,
-            isPostTransitionBuffering = false
+            isPostTransitionBuffering = false,
+            isPostMediaItemTransition = false
         )
 
         assertThat(shouldDisable).isTrue()
@@ -128,7 +129,8 @@ class AudioOffloadPolicyTest {
             lastPlayingAtMs = 1_000L,
             timeSincePlayingMs = 120L,
             isPostSeekBuffering = false,
-            isPostTransitionBuffering = true
+            isPostTransitionBuffering = true,
+            isPostMediaItemTransition = false
         )
 
         assertThat(shouldDisable).isFalse()
@@ -142,7 +144,8 @@ class AudioOffloadPolicyTest {
             lastPlayingAtMs = 1_000L,
             timeSincePlayingMs = 120L,
             isPostSeekBuffering = true,
-            isPostTransitionBuffering = false
+            isPostTransitionBuffering = false,
+            isPostMediaItemTransition = false
         )
 
         assertThat(shouldDisable).isFalse()
@@ -156,7 +159,8 @@ class AudioOffloadPolicyTest {
             lastPlayingAtMs = 1_000L,
             timeSincePlayingMs = 120L,
             isPostSeekBuffering = false,
-            isPostTransitionBuffering = false
+            isPostTransitionBuffering = false,
+            isPostMediaItemTransition = false
         )
 
         assertThat(shouldDisable).isFalse()
@@ -170,7 +174,23 @@ class AudioOffloadPolicyTest {
             lastPlayingAtMs = 1_000L,
             timeSincePlayingMs = 5_000L,
             isPostSeekBuffering = false,
-            isPostTransitionBuffering = false
+            isPostTransitionBuffering = false,
+            isPostMediaItemTransition = false
+        )
+
+        assertThat(shouldDisable).isFalse()
+    }
+
+    @Test
+    fun earlyBuffering_doesNotDisableOffloadRightAfterMediaItemTransition() {
+        val shouldDisable = shouldDisableAudioOffloadOnEarlyBuffering(
+            audioOffloadEnabled = true,
+            transitionRunning = false,
+            lastPlayingAtMs = 1_000L,
+            timeSincePlayingMs = 120L,
+            isPostSeekBuffering = false,
+            isPostTransitionBuffering = false,
+            isPostMediaItemTransition = true
         )
 
         assertThat(shouldDisable).isFalse()
