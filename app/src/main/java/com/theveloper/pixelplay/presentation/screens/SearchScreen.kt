@@ -4,6 +4,7 @@ import com.theveloper.pixelplay.presentation.navigation.navigateSafely
 import com.theveloper.pixelplay.presentation.navigation.navigateSafelyReplacing
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.tween
@@ -33,14 +34,20 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ColorScheme
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -76,9 +83,15 @@ import com.theveloper.pixelplay.data.model.SearchFilterType
 import com.theveloper.pixelplay.data.model.SearchHistoryItem
 import com.theveloper.pixelplay.data.model.SearchResultItem
 import com.theveloper.pixelplay.data.model.Song
+import com.theveloper.pixelplay.data.telegram.DeezloadSearchResult
+import com.theveloper.pixelplay.data.telegram.DeezloadDownloadProgress
 import com.theveloper.pixelplay.presentation.components.SmartImage
 import com.theveloper.pixelplay.presentation.components.SmartImageListTargetSize
 import com.theveloper.pixelplay.presentation.components.SongInfoBottomSheet
+import com.theveloper.pixelplay.presentation.telegram.deezload.DeezloadResultItem
+import com.theveloper.pixelplay.presentation.telegram.deezload.DeezloadStatusMessage
+import com.theveloper.pixelplay.presentation.telegram.deezload.DownloadProgressBanner
+import com.theveloper.pixelplay.presentation.viewmodel.DeezloadViewModel
 import com.theveloper.pixelplay.presentation.viewmodel.PlayerViewModel
 import android.util.Log
 import com.theveloper.pixelplay.ui.theme.LocalPixelPlayDarkTheme
@@ -128,6 +141,11 @@ import timber.log.Timber
 import com.theveloper.pixelplay.presentation.components.subcomps.EnhancedSongListItem
 import androidx.compose.ui.res.stringResource
 
+private enum class SearchScreenMode {
+    GENRE_BROWSE,
+    SEARCH
+}
+
 private data class SearchUiSlice(
     val selectedSearchFilter: SearchFilterType = SearchFilterType.ALL,
     val searchResults: ImmutableList<SearchResultItem> = persistentListOf()
@@ -140,6 +158,7 @@ fun SearchScreen(
     paddingValues: PaddingValues,
     playerViewModel: PlayerViewModel = hiltViewModel(),
     playlistViewModel: PlaylistViewModel = hiltViewModel(),
+    deezloadViewModel: DeezloadViewModel = hiltViewModel(),
     navController: NavHostController,
     onSearchBarActiveChange: (Boolean) -> Unit = {}
 ) {
@@ -168,6 +187,27 @@ fun SearchScreen(
     var showSongInfoBottomSheet by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
     val searchInputFocusRequester = remember { FocusRequester() }
+
+    // ─── Deezload Integration ─────────────────────────────────────────────
+    val deezloadSearchResults by deezloadViewModel.searchResults.collectAsStateWithLifecycle()
+    val isDeezloadSearching by deezloadViewModel.isSearching.collectAsStateWithLifecycle()
+    val deezloadSearchError by deezloadViewModel.searchError.collectAsStateWithLifecycle()
+    val deezloadDownloadProgress by deezloadViewModel.downloadProgress.collectAsStateWithLifecycle()
+    val deezloadActiveDownloadId by deezloadViewModel.activeDownloadId.collectAsStateWithLifecycle()
+    val isTelegramReady by deezloadViewModel.isTelegramReady.collectAsStateWithLifecycle()
+
+    val searchScreenMode by remember {
+        derivedStateOf {
+            if (searchQuery.isBlank()) SearchScreenMode.GENRE_BROWSE else SearchScreenMode.SEARCH
+        }
+    }
+
+    // Route deezload queries to DeezloadViewModel
+    LaunchedEffect(searchQuery) {
+        if (searchQuery.isNotBlank()) {
+            deezloadViewModel.updateSearchQuery(searchQuery)
+        }
+    }
 
     LaunchedEffect(Unit) {
         onSearchBarActiveChange(false)
@@ -269,6 +309,7 @@ fun SearchScreen(
                                 onSearch = { query ->
                                     if (query.isNotBlank()) {
                                         playerViewModel.onSearchQuerySubmitted(query)
+                                        deezloadViewModel.search(query)
                                     }
                                     keyboardController?.hide()
                                 },
@@ -295,6 +336,7 @@ fun SearchScreen(
                                             onClick = {
                                                 searchQuery = ""
                                                 playerViewModel.updateSearchQuery("")
+                                                deezloadViewModel.clearResults()
                                             },
                                             modifier = Modifier
                                                 .size(48.dp)
@@ -342,11 +384,10 @@ fun SearchScreen(
                 }
             }
 
-            val showGenreBrowse by remember(searchQuery) { derivedStateOf { searchQuery.isBlank() } }
             AnimatedContent(
-                targetState = showGenreBrowse,
+                targetState = searchScreenMode,
                 transitionSpec = {
-                    val switchingToGenre = targetState
+                    val switchingToGenre = targetState == SearchScreenMode.GENRE_BROWSE
                     val enter = fadeIn(animationSpec = tween(durationMillis = 320, delayMillis = 70)) +
                         slideInVertically(animationSpec = tween(durationMillis = 320)) { fullHeight ->
                             if (switchingToGenre) -fullHeight / 10 else fullHeight / 10
@@ -358,64 +399,73 @@ fun SearchScreen(
                     (enter togetherWith exit).using(SizeTransform(clip = false))
                 },
                 label = "search_mode_transition"
-            ) { isGenreMode ->
-                if (isGenreMode) {
-                    GenreCategoriesGrid(
-                        genres = genres,
-                        onGenreClick = { genre ->
-                            Timber.tag("SearchScreen")
-                                .d("Genre clicked: ${genre.name} (ID: ${genre.id})")
-                            val encodedGenreId = java.net.URLEncoder.encode(genre.id, "UTF-8")
-                            navController.navigateSafely(Screen.GenreDetail.createRoute(encodedGenreId))
-                        },
-                        playerViewModel = playerViewModel,
-                        modifier = Modifier.padding(top = 12.dp)
-                    )
-                } else {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 16.dp)
-                    ) {
-                        FlowRow(
+            ) { mode ->
+                when (mode) {
+                    SearchScreenMode.GENRE_BROWSE -> {
+                        GenreCategoriesGrid(
+                            genres = genres,
+                            onGenreClick = { genre ->
+                                Timber.tag("SearchScreen")
+                                    .d("Genre clicked: ${genre.name} (ID: ${genre.id})")
+                                val encodedGenreId = java.net.URLEncoder.encode(genre.id, "UTF-8")
+                                navController.navigateSafely(Screen.GenreDetail.createRoute(encodedGenreId))
+                            },
+                            playerViewModel = playerViewModel,
+                            modifier = Modifier.padding(top = 12.dp)
+                        )
+                    }
+                    SearchScreenMode.SEARCH -> {
+                        Column(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 8.dp, horizontal = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(0.dp)
+                                .fillMaxSize()
+                                .padding(horizontal = 16.dp)
                         ) {
-                            SearchFilterChip(SearchFilterType.ALL, currentFilter, playerViewModel)
-                            SearchFilterChip(SearchFilterType.SONGS, currentFilter, playerViewModel)
-                            SearchFilterChip(SearchFilterType.ALBUMS, currentFilter, playerViewModel)
-                            SearchFilterChip(SearchFilterType.ARTISTS, currentFilter, playerViewModel)
-                            SearchFilterChip(SearchFilterType.PLAYLISTS, currentFilter, playerViewModel)
-                        }
-                        Crossfade(
-                            targetState = searchResults.isEmpty(),
-                            animationSpec = tween(durationMillis = 190),
-                            label = "search_results_fade"
-                        ) { isEmpty ->
-                            if (isEmpty) {
-                                EmptySearchResults(
-                                    searchQuery = searchQuery,
-                                    colorScheme = colorScheme
-                                )
-                            } else {
-                                SearchResultsList(
-                                    results = searchResults,
-                                    searchQuery = searchQuery,
-                                    playerViewModel = playerViewModel,
-                                    onItemSelected = {
-                                        if (searchQuery.isNotBlank()) {
-                                            playerViewModel.onSearchQuerySubmitted(searchQuery)
-                                        }
-                                    },
-                                    currentPlayingSongId = stablePlayerState.currentSong?.id,
-                                    isPlaying = stablePlayerState.isPlaying,
-                                    onSongMoreOptionsClick = handleSongMoreOptionsClick,
-                                    navController = navController
-                                )
+                            FlowRow(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp, horizontal = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(0.dp)
+                            ) {
+                                SearchFilterChip(SearchFilterType.ALL, currentFilter, playerViewModel)
+                                SearchFilterChip(SearchFilterType.SONGS, currentFilter, playerViewModel)
+                                SearchFilterChip(SearchFilterType.ALBUMS, currentFilter, playerViewModel)
+                                SearchFilterChip(SearchFilterType.ARTISTS, currentFilter, playerViewModel)
+                                SearchFilterChip(SearchFilterType.PLAYLISTS, currentFilter, playerViewModel)
                             }
+                            
+                            AnimatedVisibility(
+                                visible = deezloadDownloadProgress != null,
+                                enter = slideInVertically() + fadeIn(),
+                                exit = slideOutVertically() + fadeOut()
+                            ) {
+                                deezloadDownloadProgress?.let { progress ->
+                                    DownloadProgressBanner(progress = progress)
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                }
+                            }
+
+                            SearchResultsList(
+                                results = searchResults,
+                                searchQuery = searchQuery,
+                                playerViewModel = playerViewModel,
+                                onItemSelected = {
+                                    if (searchQuery.isNotBlank()) {
+                                        playerViewModel.onSearchQuerySubmitted(searchQuery)
+                                    }
+                                },
+                                currentPlayingSongId = stablePlayerState.currentSong?.id,
+                                isPlaying = stablePlayerState.isPlaying,
+                                onSongMoreOptionsClick = handleSongMoreOptionsClick,
+                                navController = navController,
+                                isTelegramReady = isTelegramReady,
+                                isDeezloadSearching = isDeezloadSearching,
+                                deezloadSearchError = deezloadSearchError,
+                                deezloadSearchResults = deezloadSearchResults,
+                                deezloadActiveDownloadId = deezloadActiveDownloadId,
+                                deezloadDownloadProgress = deezloadDownloadProgress,
+                                deezloadViewModel = deezloadViewModel
+                            )
                         }
                     }
                 }
@@ -669,6 +719,7 @@ fun EmptySearchResults(searchQuery: String, colorScheme: ColorScheme) {
 
 
 @androidx.annotation.OptIn(UnstableApi::class)
+@kotlin.OptIn(androidx.compose.material3.ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun SearchResultsList(
     results: List<SearchResultItem>,
@@ -678,22 +729,19 @@ fun SearchResultsList(
     currentPlayingSongId: String?,
     isPlaying: Boolean,
     onSongMoreOptionsClick: (Song) -> Unit,
-    navController: NavHostController
+    navController: NavHostController,
+    isTelegramReady: Boolean,
+    isDeezloadSearching: Boolean,
+    deezloadSearchError: String?,
+    deezloadSearchResults: List<DeezloadSearchResult>,
+    deezloadActiveDownloadId: String?,
+    deezloadDownloadProgress: DeezloadDownloadProgress?,
+    deezloadViewModel: DeezloadViewModel
 ) {
     val localDensity = LocalDensity.current
     val playerStableState by playerViewModel.stablePlayerState.collectAsStateWithLifecycle()
 
-    if (results.isEmpty()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(stringResource(R.string.search_no_results_found), style = MaterialTheme.typography.bodyLarge)
-        }
-        return
-    }
+    val showLocalEmpty = results.isEmpty()
 
     val groupedResults = remember(results) {
         results.groupBy { item ->
@@ -756,7 +804,17 @@ fun SearchResultsList(
             bottom = if (imePadding <= 8.dp) (MiniPlayerHeight + systemBarPaddingBottom) else imePadding
         )
     ) {
-        sectionOrder.forEach { filterType ->
+        if (showLocalEmpty && deezloadSearchResults.isEmpty() && !isDeezloadSearching && deezloadSearchError == null) {
+            item(key = "empty_results") {
+                EmptySearchResults(
+                    searchQuery = searchQuery,
+                    colorScheme = MaterialTheme.colorScheme
+                )
+            }
+        }
+
+        if (!showLocalEmpty) {
+            sectionOrder.forEach { filterType ->
             val itemsForSection = groupedResults[filterType] ?: emptyList()
 
             if (itemsForSection.isNotEmpty()) {
@@ -900,6 +958,47 @@ fun SearchResultsList(
                             }
                         }
                     }
+                }
+            }
+        }
+        
+        }
+
+        if (isTelegramReady) {
+            if (deezloadSearchResults.isNotEmpty() || isDeezloadSearching || deezloadSearchError != null) {
+                item(key = "header_deezload") {
+                    SearchResultSectionHeader(title = "Descargar (Online)")
+                }
+            }
+
+            if (isDeezloadSearching) {
+                item(key = "deezload_loading") {
+                    Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                        LoadingIndicator(modifier = Modifier.size(32.dp), color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            } else if (deezloadSearchError != null && showLocalEmpty) {
+                item(key = "deezload_error") {
+                    DeezloadStatusMessage(
+                        icon = Icons.Rounded.ErrorOutline,
+                        iconColor = MaterialTheme.colorScheme.error,
+                        iconBgColor = MaterialTheme.colorScheme.errorContainer,
+                        title = stringResource(R.string.deezload_no_results),
+                        subtitle = deezloadSearchError
+                    )
+                }
+            } else if (deezloadSearchResults.isNotEmpty()) {
+                items(
+                    count = deezloadSearchResults.size,
+                    key = { index -> deezloadSearchResults[index].inlineResultId }
+                ) { index ->
+                    val result = deezloadSearchResults[index]
+                    DeezloadResultItem(
+                        result = result,
+                        isDownloading = deezloadActiveDownloadId == result.inlineResultId,
+                        downloadProgress = if (deezloadActiveDownloadId == result.inlineResultId) deezloadDownloadProgress else null,
+                        onDownloadClick = { deezloadViewModel.downloadAndSave(result) }
+                    )
                 }
             }
         }

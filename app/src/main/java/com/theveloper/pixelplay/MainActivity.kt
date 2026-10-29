@@ -760,30 +760,10 @@ class MainActivity : ComponentActivity() {
             userPreferencesRepository.clearDeprecatedPlayerSheetPreference()
         }
 
-        var showDeezloadSheet by remember { mutableStateOf(false) }
 
         CompositionLocalProvider(
             LocalAppHapticsConfig provides appHapticsConfig,
             LocalHapticFeedback provides scopedHapticFeedback
-        ) {
-            AppSidebarDrawer(
-                drawerState = drawerState,
-                selectedRoute = currentRoute ?: Screen.Home.route,
-                onDestinationSelected = { destination ->
-                    scope.launch { drawerState.close() }
-                    when (destination) {
-                        DrawerDestination.Home -> navController.navigateToTopLevelSafely(Screen.Home.route)
-                        DrawerDestination.Equalizer -> navController.navigateSafely(Screen.Equalizer.route)
-                        DrawerDestination.Settings -> navController.navigateSafely(Screen.Settings.route)
-                        DrawerDestination.Telegram -> {
-                            val intent = Intent(this@MainActivity, com.theveloper.pixelplay.presentation.telegram.auth.TelegramLoginActivity::class.java)
-                            startActivity(intent)
-                        }
-                        DrawerDestination.DeezloadMusic -> {
-                            showDeezloadSheet = true
-                        }
-                    }
-                }
         ) {
 
                 Scaffold(
@@ -1046,14 +1026,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-        }
-
-        // Deezload music download sheet
-        if (showDeezloadSheet) {
-            com.theveloper.pixelplay.presentation.telegram.deezload.DeezloadSearchSheet(
-                onDismissRequest = { showDeezloadSheet = false }
-            )
-        }
 
         Trace.endSection()
     }

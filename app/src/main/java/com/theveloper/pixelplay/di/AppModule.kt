@@ -288,6 +288,7 @@ object AppModule {
             .build()
 
         return ImageLoader.Builder(context)
+            .crossfade(true)
             .okHttpClient(okHttpClient)
             .dispatcher(Dispatchers.Default) // Use CPU-bound dispatcher for decoding
             .allowHardware(true) // Re-enable hardware bitmaps for better performance

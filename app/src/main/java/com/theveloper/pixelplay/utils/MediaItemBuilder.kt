@@ -9,14 +9,10 @@ import androidx.core.net.toUri
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
-import androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER
 import androidx.media3.common.util.UnstableApi
 import com.theveloper.pixelplay.data.provider.SharedArtworkContentProvider
 import com.theveloper.pixelplay.data.model.Song
-import com.theveloper.pixelplay.data.service.loadArtworkBytesViaCoil
 import java.io.File
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
 
 object MediaItemBuilder {
     private const val EXTERNAL_MEDIA_ID_PREFIX = "external:"
@@ -286,13 +282,6 @@ object MediaItemBuilder {
 
         exposedArtworkUri?.let { artworkUri ->
             metadataBuilder.setArtworkUri(artworkUri)
-            context?.let { appContext ->
-                runBlocking(Dispatchers.IO) {
-                    loadArtworkBytesViaCoil(appContext, artworkUri)
-                }?.let { artworkData ->
-                    metadataBuilder.setArtworkData(artworkData, PICTURE_TYPE_FRONT_COVER)
-                }
-            }
         }
 
         val extras = Bundle().apply {
