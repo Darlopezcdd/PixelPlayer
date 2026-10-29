@@ -64,6 +64,8 @@ class MultiSelectionStateHolder @Inject constructor(
     @param:ApplicationContext private val context: Context,
 ) {
 
+    private val mutationLock = Any()
+
     // Internal mutable state - uses List to preserve selection order
     // LinkedHashSet behavior is enforced via toggle logic
     private val _selectedSongs = MutableStateFlow<List<Song>>(emptyList())
@@ -98,20 +100,16 @@ class MultiSelectionStateHolder @Inject constructor(
      * @param song The song to toggle
      */
     fun toggleSelection(song: Song) {
-        val currentList = _selectedSongs.value.toMutableList()
-        val currentIds = _selectedSongIds.value.toMutableSet()
-        
-        if (currentIds.contains(song.id)) {
-            // Remove from selection
-            currentList.removeAll { it.id == song.id }
-            currentIds.remove(song.id)
-        } else {
-            // Add to selection (preserving order)
-            currentList.add(song)
-            currentIds.add(song.id)
+        synchronized(mutationLock) {
+            val currentList = _selectedSongs.value
+            val currentIds = _selectedSongIds.value
+            val (newList, newIds) = if (song.id in currentIds) {
+                currentList.filter { it.id != song.id } to (currentIds - song.id)
+            } else {
+                (currentList + song) to (currentIds + song.id)
+            }
+            updateStateLocked(newList, newIds)
         }
-        
-        updateState(currentList, currentIds)
     }
 
     /**
@@ -122,25 +120,28 @@ class MultiSelectionStateHolder @Inject constructor(
      * @param songs The complete list of songs to select
      */
     fun selectAll(songs: List<Song>) {
-        val currentIds = _selectedSongIds.value
-        val currentList = _selectedSongs.value.toMutableList()
-        
-        // Add songs that aren't already selected
-        songs.forEach { song ->
-            if (!currentIds.contains(song.id)) {
-                currentList.add(song)
+        synchronized(mutationLock) {
+            val currentIds = _selectedSongIds.value
+            val currentList = _selectedSongs.value.toMutableList()
+
+            songs.forEach { song ->
+                if (!currentIds.contains(song.id)) {
+                    currentList.add(song)
+                }
             }
+
+            val newIds = currentList.map { it.id }.toSet()
+            updateStateLocked(currentList, newIds)
         }
-        
-        val newIds = currentList.map { it.id }.toSet()
-        updateState(currentList, newIds)
     }
 
     /**
      * Clears all selected songs, exiting selection mode.
      */
     fun clearSelection() {
-        updateState(emptyList(), emptySet())
+        synchronized(mutationLock) {
+            updateStateLocked(emptyList(), emptySet())
+        }
     }
 
     /**
@@ -172,17 +173,18 @@ class MultiSelectionStateHolder @Inject constructor(
      * @param songId The ID of the song to remove
      */
     fun removeFromSelection(songId: String) {
-        if (!_selectedSongIds.value.contains(songId)) return
-        
-        val currentList = _selectedSongs.value.filter { it.id != songId }
-        val currentIds = _selectedSongIds.value - songId
-        updateState(currentList, currentIds)
+        synchronized(mutationLock) {
+            val currentIds = _selectedSongIds.value
+            if (songId !in currentIds) return
+            val newList = _selectedSongs.value.filter { it.id != songId }
+            updateStateLocked(newList, currentIds - songId)
+        }
     }
 
     /**
-     * Updates all state flows atomically.
+     * Updates all four state flows under [mutationLock].
      */
-    private fun updateState(songs: List<Song>, ids: Set<String>) {
+    private fun updateStateLocked(songs: List<Song>, ids: Set<String>) {
         _selectedSongs.value = songs
         _selectedSongIds.value = ids
         _selectedCount.value = songs.size

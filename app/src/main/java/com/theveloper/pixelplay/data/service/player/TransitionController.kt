@@ -189,6 +189,8 @@ class TransitionController @Inject constructor(
                 Pair(resolution, isEnabled)
             }.distinctUntilChanged() // Crucial: prevents restarting the job if the same settings are emitted again
             .collectLatest { (resolution, isEnabled) ->
+                var pauseAtEndWasEnabled = false
+                try {
 
                 val settings = resolution.settings
                 Timber.tag("TransitionDebug").d(
@@ -252,6 +254,7 @@ class TransitionController @Inject constructor(
                 // --- CRITICAL FIX: Enable Pause At End ---
                 // We want to control the transition manually, so we prevent auto-advance.
                 engine.setPauseAtEndOfMediaItems(shouldPause = true)
+                pauseAtEndWasEnabled = true
                 Timber.tag("TransitionDebug").d("Enabled pauseAtEndOfMediaItems to prevent auto-skip.")
 
                 if (transitionPoint <= player.currentPosition) {
@@ -259,10 +262,12 @@ class TransitionController @Inject constructor(
                     if (remaining > 0L) {
                         val adjustedDuration = remaining.coerceAtMost(effectiveDuration)
                         Timber.tag("TransitionDebug").w("Already past transition point! Triggering immediately.")
+                        pauseAtEndWasEnabled = false
                         engine.performTransition(settings.copy(durationMs = adjustedDuration.toInt()))
                     } else {
                         Timber.tag("TransitionDebug").w("Too close to end (%d ms left). Skipping to avoid glitch.", remaining)
                         engine.cancelNext()
+                        pauseAtEndWasEnabled = false
                         engine.setPauseAtEndOfMediaItems(shouldPause = false)
                     }
                     return@collectLatest
@@ -290,15 +295,24 @@ class TransitionController @Inject constructor(
                     if (remaining > 0L) {
                         val adjustedDuration = remaining.coerceAtMost(effectiveDuration)
                         Timber.tag("TransitionDebug").d("FIRING TRANSITION NOW!")
+                        pauseAtEndWasEnabled = false
                         engine.performTransition(settings.copy(durationMs = adjustedDuration.toInt()))
                     } else {
                         Timber.tag("TransitionDebug").w("Too close to end (%d ms left). Skipping to avoid glitch.", remaining)
                         engine.cancelNext()
+                        pauseAtEndWasEnabled = false
                         engine.setPauseAtEndOfMediaItems(shouldPause = false)
                     }
                 } else {
                     Timber.tag("TransitionDebug").d("Job cancelled before firing.")
+                    pauseAtEndWasEnabled = false
                     engine.setPauseAtEndOfMediaItems(shouldPause = false)
+                }
+                } finally {
+                    if (pauseAtEndWasEnabled) {
+                        Timber.tag("TransitionDebug").d("collectLatest cancelled with pauseAtEnd=true; resetting to false.")
+                        engine.setPauseAtEndOfMediaItems(shouldPause = false)
+                    }
                 }
             }
         }

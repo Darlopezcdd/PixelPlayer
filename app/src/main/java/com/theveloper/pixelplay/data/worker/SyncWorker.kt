@@ -523,6 +523,10 @@ constructor(
         val allCrossRefs = mutableListOf<SongArtistCrossRef>()
         val artistTrackCounts = mutableMapOf<Long, Int>()
         val albumMap = mutableMapOf<AlbumGroupingKey, Long>()
+        // Reverse map: tracks which album ID is already claimed by which
+        // grouping key so we can detect collisions when different album names
+        // share the same MediaStore album ID (e.g. all tagged "Music").
+        val albumIdOwner = mutableMapOf<Long, AlbumGroupingKey>()
         val artistSplitCache = mutableMapOf<String, List<String>>()
         val correctedSongs = ArrayList<SongEntity>(songs.size)
 
@@ -530,7 +534,9 @@ constructor(
             .sortedBy { it.id }
             .forEach { album ->
                 buildAlbumGroupingKeys(album).forEach { key ->
-                    albumMap.putIfAbsent(key, album.id)
+                    if (albumMap.putIfAbsent(key, album.id) == null) {
+                        albumIdOwner.putIfAbsent(album.id, key)
+                    }
                 }
             }
 
@@ -581,7 +587,18 @@ constructor(
 
             // --- Album Logic ---
             val albumKey = buildAlbumGroupingKey(song)
-            val finalAlbumId = albumMap.getOrPut(albumKey) { song.albumId }
+            val finalAlbumId = albumMap.getOrPut(albumKey) {
+                val proposedId = song.albumId
+                val ownerKey = albumIdOwner[proposedId]
+                if (ownerKey != null && ownerKey != albumKey) {
+                    val syntheticId = deriveSyntheticAlbumId(albumKey, albumIdOwner)
+                    albumIdOwner[syntheticId] = albumKey
+                    syntheticId
+                } else {
+                    albumIdOwner[proposedId] = albumKey
+                    proposedId
+                }
+            }
 
             // Build serialized artists JSON for efficient loading without JOINs
             val artistRefsForJson = allArtistsForSong.mapIndexed { index, name ->
@@ -1067,6 +1084,24 @@ constructor(
     }
 
     /**
+     * Checks if an album name looks like a generic folder/category name that
+     * Android's MediaStore may have used as a fallback when it failed to read
+     * proper ID3/Vorbis tags from the file.
+     */
+    private fun looksLikeGenericAlbumName(albumName: String): Boolean {
+        val lower = albumName.trim().lowercase()
+        return lower == "music" ||
+            lower == "songs" ||
+            lower == "audio" ||
+            lower == "media" ||
+            lower == "downloads" ||
+            lower == "download" ||
+            lower == "pixelplayer downloads" ||
+            lower == "recordings" ||
+            lower == "record"
+    }
+
+    /**
      * Process a single song's raw data into a SongEntity. This is the CPU/IO intensive work that
      * benefits from parallelization.
      */
@@ -1114,7 +1149,8 @@ constructor(
                         // MediaStore uses "<unknown>" for unreadable fields;
                         // our normalization may produce "Unknown Artist"/"Unknown Album".
                         isDefaultMetadata(raw.artist) ||
-                        isDefaultMetadata(raw.album)
+                        isDefaultMetadata(raw.album) ||
+                        looksLikeGenericAlbumName(raw.album)
 
         if (shouldAugmentMetadata) {
             val file = java.io.File(raw.filePath)
@@ -1200,7 +1236,18 @@ constructor(
         return ids
     }
 
+    private fun deriveSyntheticAlbumId(
+        key: AlbumGroupingKey,
+        usedIds: Map<Long, *>
+    ): Long {
+        var id = "${key.normalizedTitle}\u0000${key.identity}"
+            .hashCode().toLong().absoluteValue + SYNTHETIC_ALBUM_ID_OFFSET
+        while (usedIds.containsKey(id)) id++
+        return id
+    }
+
     companion object {
+        private const val SYNTHETIC_ALBUM_ID_OFFSET = 8_000_000_000_000L
         const val WORK_NAME = "com.theveloper.pixelplay.data.worker.SyncWorker"
         // Distinct unique name so background maintenance never feeds the WORK_NAME-bound
         // isSyncing/syncProgress flows — the loading indicator stays silent for it.

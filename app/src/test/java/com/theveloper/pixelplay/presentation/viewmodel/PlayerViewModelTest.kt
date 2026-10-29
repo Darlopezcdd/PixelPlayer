@@ -329,7 +329,6 @@ class PlayerViewModelTest {
             sessionToken,
             mockMediaControllerFactory
         )
-        playerViewModel.mediaMapper = mockMediaMapper
     }
 
     @AfterEach

@@ -2650,6 +2650,14 @@ class PlayerViewModel @Inject constructor(
         castRouteStateHolder.refreshCastRoutes(viewModelScope)
     }
 
+    fun acquireMulticastLock() {
+        castStateHolder.acquireMulticastLock()
+    }
+
+    fun releaseMulticastLock() {
+        castStateHolder.releaseMulticastLock()
+    }
+
 
 
     override fun onCleared() {

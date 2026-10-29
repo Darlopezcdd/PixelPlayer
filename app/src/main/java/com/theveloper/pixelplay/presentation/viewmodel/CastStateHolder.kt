@@ -12,6 +12,10 @@ import com.google.android.gms.cast.framework.SessionManager
 import com.theveloper.pixelplay.data.model.Song
 import com.theveloper.pixelplay.data.service.player.CastPlayer
 import dagger.hilt.android.qualifiers.ApplicationContext
+import android.net.wifi.WifiManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,6 +36,12 @@ class CastStateHolder @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val CAST_STATE_TAG = "CastStateHolder"
+    private val mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    private val wifiManager: WifiManager? by lazy {
+        context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+    }
+    private var multicastLock: WifiManager.MulticastLock? = null
 
     // Cast session manager
     val sessionManager: SessionManager? by lazy {
@@ -100,8 +110,7 @@ class CastStateHolder @Inject constructor(
      * Check if a route is a Cast route.
      */
     fun MediaRouter.RouteInfo.isCastRoute(): Boolean {
-        return supportsControlCategory(MediaControlIntent.CATEGORY_REMOTE_PLAYBACK) ||
-            supportsControlCategory(castControlCategory)
+        return matchesSelector(buildCastRouteSelector())
     }
     
     /**
@@ -281,14 +290,61 @@ class CastStateHolder @Inject constructor(
     }
     
     fun disconnect() {
-        mediaRouter.selectRoute(mediaRouter.defaultRoute)
-        syncSelectedRouteFromRouter(mediaRouter)
-        updateRoutes()
+        mainScope.launch {
+            mediaRouter.selectRoute(mediaRouter.defaultRoute)
+            syncSelectedRouteFromRouter(mediaRouter)
+            updateRoutes()
+        }
+    }
+
+    /**
+     * Acquire Wifi MulticastLock to allow local network mDNS discovery on devices
+     * that block multicast by default (e.g. Oplus, Xiaomi, custom ROMs).
+     */
+    fun acquireMulticastLock() {
+        mainScope.launch {
+            try {
+                if (multicastLock == null) {
+                    multicastLock = wifiManager?.createMulticastLock("PixelPlayer:CastDiscovery")?.apply {
+                        setReferenceCounted(false)
+                    }
+                }
+                multicastLock?.let { lock ->
+                    if (!lock.isHeld) {
+                        lock.acquire()
+                        Timber.tag(CAST_STATE_TAG).i("Wifi MulticastLock acquired successfully")
+                    }
+                }
+            } catch (e: Exception) {
+                Timber.tag(CAST_STATE_TAG).e(e, "Failed to acquire Wifi MulticastLock")
+            }
+        }
+    }
+
+    /**
+     * Release the Wifi MulticastLock.
+     */
+    fun releaseMulticastLock() {
+        mainScope.launch {
+            try {
+                multicastLock?.let { lock ->
+                    if (lock.isHeld) {
+                        lock.release()
+                        Timber.tag(CAST_STATE_TAG).i("Wifi MulticastLock released successfully")
+                    }
+                }
+            } catch (e: Exception) {
+                Timber.tag(CAST_STATE_TAG).e(e, "Failed to release Wifi MulticastLock")
+            }
+        }
     }
     
     fun onCleared() {
         refreshRoutesJob?.cancel()
-        mediaRouter.removeCallback(mediaRouterCallback)
+        mainScope.launch {
+            mediaRouter.removeCallback(mediaRouterCallback)
+            releaseMulticastLock()
+        }
     }
 
     init {

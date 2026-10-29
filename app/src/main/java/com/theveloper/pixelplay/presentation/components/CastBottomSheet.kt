@@ -211,16 +211,22 @@ fun CastBottomSheet(
         missingPermissions = missingCastPermissions(context, requiredPermissions)
         if (missingPermissions.isEmpty()) {
             playerViewModel.refreshLocalConnectionInfo(refreshBluetoothDevices = true)
+            playerViewModel.refreshCastRoutes()
+        }
+    }
+
+    LaunchedEffect(isWifiRadioOn, isWifiEnabled) {
+        if ((isWifiRadioOn || isWifiEnabled) && missingPermissions.isEmpty()) {
+            playerViewModel.refreshCastRoutes()
         }
     }
 
     val activeRoute = selectedRoute?.takeUnless { it.isDefault }
     val isRemoteSession = (isRemotePlaybackActive || isCastConnecting) && activeRoute != null
 
-    val availableRoutes = if (isWifiEnabled) {
-        routes.filterNot { it.isDefault }
-    } else {
-        emptyList()
+    val availableRoutes = remember(routes, isWifiRadioOn, isWifiEnabled) {
+        val nonDefault = routes.filterNot { it.isDefault }
+        if (nonDefault.isNotEmpty() || isWifiRadioOn || isWifiEnabled) nonDefault else emptyList()
     }
     val bluetoothDevices = bluetoothAudioDeviceStates
         .map { state -> state.copy(name = state.name.trim()) }
@@ -339,8 +345,12 @@ fun CastBottomSheet(
     )
 
     DisposableEffect(Unit) {
+        playerViewModel.acquireMulticastLock()
         onExpansionChanged(1f)
-        onDispose { onExpansionChanged(0f) }
+        onDispose {
+            playerViewModel.releaseMulticastLock()
+            onExpansionChanged(0f)
+        }
     }
 
     ModalBottomSheet(
@@ -575,7 +585,7 @@ private fun CastSheetContent(
     onRefresh: () -> Unit,
     startWithControls: Boolean = true
 ) {
-    val allConnectivityOff = !state.wifiEnabled && !state.isBluetoothEnabled
+    val allConnectivityOff = !(state.wifiEnabled || state.wifiRadioOn) && !state.isBluetoothEnabled
     val configuration = LocalConfiguration.current
     val safeInsets = WindowInsets.safeDrawing.asPaddingValues()
     val maxPagerHeight = (

@@ -714,6 +714,7 @@ fun SearchScreen(
                                         .zIndex(2f)
                                         .padding(top = 16.dp)
                                 )
+                            }
                         }
                     }
                 }
