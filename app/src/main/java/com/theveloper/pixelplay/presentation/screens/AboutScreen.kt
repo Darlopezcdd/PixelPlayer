@@ -105,6 +105,7 @@ import com.theveloper.pixelplay.R
 import com.theveloper.pixelplay.data.github.GitHubContributorService
 import com.theveloper.pixelplay.presentation.components.CollapsibleCommonTopBar
 import com.theveloper.pixelplay.presentation.components.MiniPlayerHeight
+import com.theveloper.pixelplay.presentation.components.OtaUpdateCard
 import com.theveloper.pixelplay.presentation.components.SmartImage
 import com.theveloper.pixelplay.presentation.navigation.Screen
 import com.theveloper.pixelplay.presentation.navigation.navigateSafely
@@ -383,6 +384,16 @@ fun AboutScreen(
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp)
                         .padding(top = 8.dp),
+                )
+            }
+
+            item(key = "ota_update_card") {
+                OtaUpdateCard(
+                    currentVersion = versionName,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                        .padding(top = 12.dp),
                 )
             }
 

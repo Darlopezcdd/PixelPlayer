@@ -137,6 +137,8 @@ import com.theveloper.pixelplay.presentation.navigation.Screen
 import com.theveloper.pixelplay.presentation.screens.SetupScreen
 import com.theveloper.pixelplay.presentation.viewmodel.MainViewModel
 import com.theveloper.pixelplay.presentation.viewmodel.PlayerViewModel
+import com.theveloper.pixelplay.data.update.AppUpdateManager
+import com.theveloper.pixelplay.presentation.components.StartupOtaUpdateDialog
 import com.theveloper.pixelplay.ui.theme.PixelPlayTheme
 import com.theveloper.pixelplay.ui.theme.LocalShowScrollbar
 import com.theveloper.pixelplay.utils.CrashHandler
@@ -223,8 +225,8 @@ class MainActivity : ComponentActivity() {
         // Data loading is handled via optimistic UI and smooth transitions.
         splashScreen.setKeepOnScreenCondition { false }
 
-        // LEER SEÑAL DE BENCHMARK
-        val isBenchmarkMode = intent.getBooleanExtra("is_benchmark", false)
+        // LEER SEÑAL DE BENCHMARK (solo permitido en compilaciones DEBUG)
+        val isBenchmarkMode = BuildConfig.DEBUG && intent.getBooleanExtra("is_benchmark", false)
         val shouldBenchmarkRebuildDatabase =
             isBenchmarkMode && intent.getBooleanExtra("benchmark_rebuild_database", false)
         Timber.i("onCreate benchmark=$isBenchmarkMode rebuildDatabase=$shouldBenchmarkRebuildDatabase")
@@ -279,11 +281,14 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // Check for crash log when app starts
+            // Check for crash log and OTA updates when app starts
             LaunchedEffect(Unit) {
                 if (!isBenchmarkMode && CrashHandler.hasCrashLog()) {
                     crashLogData = CrashHandler.getCrashLog()
                     showCrashReportDialog = true
+                }
+                if (!isBenchmarkMode) {
+                    AppUpdateManager.checkForUpdates(applicationContext, force = false)
                 }
             }
 
@@ -291,6 +296,7 @@ class MainActivity : ComponentActivity() {
                 PixelPlayTheme(
                     darkTheme = useDarkTheme
                 ) {
+                    StartupOtaUpdateDialog()
                     var contentVisible by remember { mutableStateOf(false) }
                     val contentAlpha by animateFloatAsState(
                         targetValue = if (contentVisible) 1f else 0f,
@@ -1101,7 +1107,7 @@ class MainActivity : ComponentActivity() {
         LogUtils.d(this, "onStart")
         playerViewModel.onMainActivityStart()
 
-        if (intent.getBooleanExtra("is_benchmark", false)) {
+        if (BuildConfig.DEBUG && intent.getBooleanExtra("is_benchmark", false)) {
             // Benchmark mode no longer loads dummy data - uses real library data instead
         }
 
